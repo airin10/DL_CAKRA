@@ -267,19 +267,15 @@ class DatasetProcessor:
         return len(image_files), image_files[:5]
     
     def extract_qr_content_robust(self, image_path):
-        if not QR_DECODER_AVAILABLE:
-            return ""
-
+        """Extract QR content dengan multiple attempts"""
         try:
             img = cv2.imread(image_path)
             if img is None:
                 return ""
-
+            
             decoded = decode(img)
             if decoded:
                 return decoded[0].data.decode('utf-8', errors='ignore')
-        ...
-
             
             # Try preprocessing
             try:
@@ -693,10 +689,8 @@ class CompleteModelTrainer:
             'recall': metrics_dict['recall'],
             'auc': metrics_dict['auc'],
             'loss': metrics_dict['loss'],
-            'f1_score': (
-                2 * (metrics_dict['precision'] * metrics_dict['recall']) /
-                (metrics_dict['precision'] + metrics_dict['recall'] + 1e-7)
-            )
+            'f1_score': 2 * (metrics_dict['precision'] * metrics_dict['recall']) / 
+                       (metrics_dict['precision'] + metrics_dict['recall'] + 1e-7)
         }
         
         st.success(
