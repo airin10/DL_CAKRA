@@ -902,7 +902,6 @@ def main():
 
         st.markdown("---")
         st.header("🔄 Reset App")
-
         if st.button("Reset Cache & App State"):
             st.cache_data.clear()
             st.cache_resource.clear()

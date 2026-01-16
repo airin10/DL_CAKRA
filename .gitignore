@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.pyc
+
+# Model & output besar
+models/
+*.h5
+*.zip
+
+# Streamlit
+.streamlit/
+
+# Temp
+tmp/
+temp/
