@@ -381,7 +381,7 @@ class DatasetProcessor:
         texts = []
         labels = []
         valid_text_count = 0
-        
+
         # Process benign images
         if dataset_info['has_benign'] and dataset_info['benign_path']:
             for filename in os.listdir(dataset_info['benign_path']):
@@ -436,8 +436,23 @@ class DatasetProcessor:
                     except:
                         continue
         
-        if len(images) == 0:
+        # === SAFETY CHECK ===
+        unique, counts = np.unique(labels, return_counts=True)
+        label_dist = dict(zip(unique, counts))
+
+        st.write("📊 Label distribution:", label_dist)
+
+        if len(label_dist) < 2:
+            st.error("❌ Dataset harus memiliki minimal 2 kelas (benign & malicious)")
             return None
+
+        if min(label_dist.values()) < 2:
+            st.warning(
+                "⚠️ Salah satu kelas terlalu sedikit. Stratified split dinonaktifkan."
+            )
+            use_stratify = False
+        else:
+            use_stratify = True
         
         st.info(f"📝 Valid QR texts decoded: {valid_text_count}/{len(images)} "
                 f"({valid_text_count/len(images)*100:.1f}%)")
@@ -452,18 +467,19 @@ class DatasetProcessor:
         
         # Split untuk CNN
         train_idx_cnn, test_idx_cnn = train_test_split(
-            indices, 
+            indices,
             test_size=0.2,
             random_state=42,
-            stratify=labels_array
+            stratify=labels_array if use_stratify else None
         )
+
         
         # Split untuk text models
         train_idx_txt, test_idx_txt = train_test_split(
             indices,
             test_size=0.2,
             random_state=42,
-            stratify=labels_array
+            stratify=labels_array if use_stratify else None
         )
         
         # Prepare CNN data
