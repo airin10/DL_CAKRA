@@ -267,15 +267,19 @@ class DatasetProcessor:
         return len(image_files), image_files[:5]
     
     def extract_qr_content_robust(self, image_path):
-        """Extract QR content dengan multiple attempts"""
+        if not QR_DECODER_AVAILABLE:
+            return ""
+
         try:
             img = cv2.imread(image_path)
             if img is None:
                 return ""
-            
+
             decoded = decode(img)
             if decoded:
                 return decoded[0].data.decode('utf-8', errors='ignore')
+        ...
+
             
             # Try preprocessing
             try:
@@ -376,6 +380,7 @@ class DatasetProcessor:
             return None
     
     def prepare_training_data(self, dataset_info, use_synthetic=True):
+        
         """Prepare data untuk semua model"""
         images = []
         texts = []
@@ -446,13 +451,13 @@ class DatasetProcessor:
             st.error("❌ Dataset harus memiliki minimal 2 kelas (benign & malicious)")
             return None
 
+        use_stratify = True
         if min(label_dist.values()) < 2:
             st.warning(
                 "⚠️ Salah satu kelas terlalu sedikit. Stratified split dinonaktifkan."
             )
             use_stratify = False
-        else:
-            use_stratify = True
+
         
         st.info(f"📝 Valid QR texts decoded: {valid_text_count}/{len(images)} "
                 f"({valid_text_count/len(images)*100:.1f}%)")
@@ -509,12 +514,13 @@ class DatasetProcessor:
         X_test_seq = self.texts_to_sequences(X_test_txt)
         
         # Calculate class weights
+        classes = np.unique(y_train_txt)
         class_weights = compute_class_weight(
-            'balanced',
-            classes=np.unique(y_train_txt),
+            class_weight='balanced',
+            classes=classes,
             y=y_train_txt
         )
-        class_weight_dict = {i: class_weights[i] for i in range(len(class_weights))}
+        class_weight_dict = dict(zip(classes, class_weights))
         
         return {
             # CNN data
@@ -687,8 +693,10 @@ class CompleteModelTrainer:
             'recall': metrics_dict['recall'],
             'auc': metrics_dict['auc'],
             'loss': metrics_dict['loss'],
-            'f1_score': 2 * (metrics_dict['precision'] * metrics_dict['recall']) / 
-                       (metrics_dict['precision'] + metrics_dict['recall'] + 1e-7)
+            'f1_score': (
+                2 * (metrics_dict['precision'] * metrics_dict['recall']) /
+                (metrics_dict['precision'] + metrics_dict['recall'] + 1e-7)
+            )
         }
         
         st.success(
