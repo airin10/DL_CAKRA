@@ -1,12 +1,19 @@
-pandas==2.0.0
-pyzbar==0.1.9
-plotly==5.17.0
-matplotlib==3.7.0
-seaborn==0.12.0
-streamlit>=1.28,<1.32
+# Streamlit (versi terbaru yang kompatibel)
+streamlit>=1.32.0
+
+# TensorFlow + Protobuf (harus sesuai)
+tensorflow-cpu>=2.16.0
+protobuf>=5.28.0
+
+# OpenCV (versi modern untuk Python 3.13)
+opencv-python-headless>=4.10.0
+
+# Dependensi lain (pastikan versi aman)
+pandas>=2.1.0
 numpy>=1.26.0
 scikit-learn>=1.4.0
-opencv-python-headless>=4.10.0
+matplotlib>=3.8.0
+seaborn>=0.13.0
 pillow>=10.0.0
-tensorflow-cpu>=2.16.0
-protobuf<5
+pyzbar>=0.1.9
+plotly>=5.17.0
