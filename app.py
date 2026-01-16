@@ -901,6 +901,16 @@ def main():
         )
 
         st.markdown("---")
+        st.header("🔄 Reset App")
+
+        if st.button("Reset Cache & App State"):
+            st.cache_data.clear()
+            st.cache_resource.clear()
+            st.session_state.clear()
+            st.experimental_rerun()
+
+
+        st.markdown("---")
         st.header("⚙️ Training Parameters")
         use_synthetic = st.checkbox("Use Synthetic Text Data", value=True,
                                     help="Generate synthetic QR text if decoding fails")
