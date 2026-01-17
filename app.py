@@ -723,6 +723,7 @@ class CompleteModelTrainer:
         
         metrics_dict = dict(zip(model.metrics_names, eval_results))
         
+        
         self.models['cnn'] = model
         self.histories['cnn'] = history.history
         
@@ -815,14 +816,28 @@ class CompleteModelTrainer:
         self.models['lstm'] = model
         self.histories['lstm'] = history.history
         
+        # Cari nama accuracy yang benar
+        accuracy_key = 'accuracy'
+        if 'binary_accuracy' in metrics_dict:
+            accuracy_key = 'binary_accuracy'
+        elif 'sparse_categorical_accuracy' in metrics_dict:
+            accuracy_key = 'sparse_categorical_accuracy'
+        # fallback: jika tetap 'accuracy', biarkan
+
+        # Ambil nilai
+        accuracy_val = metrics_dict[accuracy_key]
+        precision_val = metrics_dict.get('precision', 0.0)
+        recall_val = metrics_dict.get('recall', 0.0)
+        auc_val = metrics_dict.get('auc', 0.0)
+        loss_val = metrics_dict.get('loss', float('inf'))
+
         self.results['lstm'] = {
-            'accuracy': metrics_dict['accuracy'],
-            'precision': metrics_dict['precision'],
-            'recall': metrics_dict['recall'],
-            'auc': metrics_dict['auc'],
-            'loss': metrics_dict['loss'],
-            'f1_score': 2 * (metrics_dict['precision'] * metrics_dict['recall']) / 
-                       (metrics_dict['precision'] + metrics_dict['recall'] + 1e-7)
+            'accuracy': float(accuracy_val),
+            'precision': float(precision_val),
+            'recall': float(recall_val),
+            'auc': float(auc_val),
+            'loss': float(loss_val),
+            'f1_score': 2 * (precision_val * recall_val) / (precision_val + recall_val + 1e-7)
         }
         
         st.success(
