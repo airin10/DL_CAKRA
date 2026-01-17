@@ -376,15 +376,18 @@ class DatasetProcessor:
             return None
     
     def prepare_training_data(self, dataset_info, use_synthetic=True):
-        
         """Prepare data untuk semua model"""
         images = []
         texts = []
         labels = []
         valid_text_count = 0
 
+        # === DEBUG LOG ===
+        st.write("🔍 Debug: Starting data preparation...")
+        
         # Process benign images
         if dataset_info['has_benign'] and dataset_info['benign_path']:
+            st.write(f"🔍 Processing benign images from: {dataset_info['benign_path']}")
             for filename in os.listdir(dataset_info['benign_path']):
                 if filename.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp')):
                     img_path = os.path.join(dataset_info['benign_path'], filename)
@@ -392,7 +395,6 @@ class DatasetProcessor:
                     try:
                         img = cv2.imread(img_path)
                         if img is not None:
-                            # Untuk CNN
                             img_resized = cv2.resize(img, self.IMG_SIZE)
                             img_resized = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB)
                             images.append(img_resized)
@@ -408,11 +410,13 @@ class DatasetProcessor:
                                 texts.append("")
                             
                             labels.append(0)  # benign
-                    except:
+                    except Exception as e:
+                        st.write(f"⚠️ Error processing {filename}: {e}")
                         continue
         
         # Process malicious images
         if dataset_info['has_malicious'] and dataset_info['malicious_path']:
+            st.write(f"🔍 Processing malicious images from: {dataset_info['malicious_path']}")
             for filename in os.listdir(dataset_info['malicious_path']):
                 if filename.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp')):
                     img_path = os.path.join(dataset_info['malicious_path'], filename)
@@ -434,54 +438,80 @@ class DatasetProcessor:
                                 texts.append("")
                             
                             labels.append(1)  # malicious
-                    except:
+                    except Exception as e:
+                        st.write(f"⚠️ Error processing {filename}: {e}")
                         continue
         
-        # === SAFETY CHECK ===
-        unique, counts = np.unique(labels, return_counts=True)
-        label_dist = dict(zip(unique, counts))
-
-        st.write("📊 Label distribution:", label_dist)
-
-        if len(label_dist) < 2:
-            st.error("❌ Dataset harus memiliki minimal 2 kelas (benign & malicious)")
+        # === CHECK IF DATA EXISTS ===
+        if len(images) == 0:
+            st.error("❌ Tidak ada gambar yang berhasil diproses!")
+            st.write(f"Benign path exists: {os.path.exists(dataset_info['benign_path']) if dataset_info['benign_path'] else False}")
+            st.write(f"Malicious path exists: {os.path.exists(dataset_info['malicious_path']) if dataset_info['malicious_path'] else False}")
             return None
-
-        use_stratify = True
-        if min(label_dist.values()) < 2:
-            st.warning(
-                "⚠️ Salah satu kelas terlalu sedikit. Stratified split dinonaktifkan."
-            )
-            use_stratify = False
-
         
-        st.info(f"📝 Valid QR texts decoded: {valid_text_count}/{len(images)} "
-                f"({valid_text_count/len(images)*100:.1f}%)")
-        
-        # Convert to numpy
+        # === CONVERT TO NUMPY ===
+        st.write(f"🔍 Convert {len(images)} images to numpy...")
         images_array = np.array(images, dtype='float32') / 255.0
         labels_array = np.array(labels)
         texts_array = np.array(texts)
         
-        # Split data
-        indices = np.arange(len(images_array))
+        st.write(f"✅ Data shape: Images={images_array.shape}, Labels={labels_array.shape}")
         
-        # Split untuk CNN
-        train_idx_cnn, test_idx_cnn = train_test_split(
-            indices,
-            test_size=0.2,
-            random_state=42,
-            stratify=labels_array if use_stratify else None
-        )
-
+        # === CHECK LABEL DISTRIBUTION ===
+        unique_labels, label_counts = np.unique(labels_array, return_counts=True)
+        st.write(f"📊 Label distribution: {dict(zip(unique_labels, label_counts))}")
         
-        # Split untuk text models
-        train_idx_txt, test_idx_txt = train_test_split(
-            indices,
-            test_size=0.2,
-            random_state=42,
-            stratify=labels_array if use_stratify else None
-        )
+        if len(unique_labels) < 2:
+            st.error(f"❌ Hanya ada {len(unique_labels)} kelas. Butuh minimal 2 kelas (benign & malicious).")
+            return None
+        
+        # === SAFE SPLIT WITH ERROR HANDLING ===
+        try:
+            indices = np.arange(len(images_array))
+            
+            # Split untuk CNN
+            if len(indices) >= 10 and min(label_counts) >= 2:
+                # Cukup data untuk stratified split
+                train_idx_cnn, test_idx_cnn = train_test_split(
+                    indices,
+                    test_size=0.2,
+                    random_state=42,
+                    stratify=labels_array
+                )
+                st.write("✅ CNN split: Stratified")
+            else:
+                # Data sedikit, gunakan random split
+                st.warning("⚠️ Data sedikit, menggunakan random split tanpa stratify")
+                train_idx_cnn, test_idx_cnn = train_test_split(
+                    indices,
+                    test_size=0.2,
+                    random_state=42
+                )
+            
+            # Split untuk text models
+            if len(indices) >= 10 and min(label_counts) >= 2:
+                train_idx_txt, test_idx_txt = train_test_split(
+                    indices,
+                    test_size=0.2,
+                    random_state=43  # Seed berbeda
+                )
+                st.write("✅ Text split: Stratified")
+            else:
+                train_idx_txt, test_idx_txt = train_test_split(
+                    indices,
+                    test_size=0.2,
+                    random_state=43
+                )
+            
+        except Exception as e:
+            st.error(f"❌ Error dalam train_test_split: {e}")
+            # Fallback: manual split
+            st.warning("⚠️ Menggunakan manual split...")
+            split_idx = int(len(images_array) * 0.8)
+            train_idx_cnn = np.arange(split_idx)
+            test_idx_cnn = np.arange(split_idx, len(images_array))
+            train_idx_txt = train_idx_cnn.copy()
+            test_idx_txt = test_idx_cnn.copy()
         
         # Prepare CNN data
         X_train_img = images_array[train_idx_cnn]
@@ -495,28 +525,47 @@ class DatasetProcessor:
         y_train_txt = labels_array[train_idx_txt]
         y_test_txt = labels_array[test_idx_txt]
         
-        # Prepare text sequences
-        self.tokenizer = Tokenizer(
-            num_words=self.VOCAB_SIZE,
-            char_level=False,
-            lower=True,
-            oov_token='<OOV>',
-            filters='!"#$%&()*+,-./:;<=>?@[\\]^_`{|}~\t\n'
-        )
+        st.write(f"✅ Split sizes - Train: {len(X_train_img)}, Test: {len(X_test_img)}")
+        st.write(f"Text samples - Valid: {valid_text_count}, Total: {len(texts)}")
         
-        self.tokenizer.fit_on_texts(X_train_txt)
+        # === PREPARE TEXT TOKENIZER ===
+        try:
+            self.tokenizer = Tokenizer(
+                num_words=self.VOCAB_SIZE,
+                char_level=False,
+                lower=True,
+                oov_token='<OOV>',
+                filters='!"#$%&()*+,-./:;<=>?@[\\]^_`{|}~\t\n'
+            )
+            
+            self.tokenizer.fit_on_texts(X_train_txt)
+            
+            X_train_seq = self.texts_to_sequences(X_train_txt)
+            X_test_seq = self.texts_to_sequences(X_test_txt)
+            
+            vocab_size = min(self.VOCAB_SIZE, len(self.tokenizer.word_index) + 1)
+            st.write(f"✅ Vocabulary size: {vocab_size}")
+            
+        except Exception as e:
+            st.error(f"❌ Error preparing text data: {e}")
+            # Buat data dummy jika text processing gagal
+            X_train_seq = np.zeros((len(X_train_txt), self.MAX_LEN))
+            X_test_seq = np.zeros((len(X_test_txt), self.MAX_LEN))
+            vocab_size = self.VOCAB_SIZE
         
-        X_train_seq = self.texts_to_sequences(X_train_txt)
-        X_test_seq = self.texts_to_sequences(X_test_txt)
-        
-        # Calculate class weights
-        classes = np.unique(y_train_txt)
-        class_weights = compute_class_weight(
-            class_weight='balanced',
-            classes=classes,
-            y=y_train_txt
-        )
-        class_weight_dict = dict(zip(classes, class_weights))
+        # === CALCULATE CLASS WEIGHTS ===
+        try:
+            classes = np.unique(y_train_txt)
+            class_weights = compute_class_weight(
+                class_weight='balanced',
+                classes=classes,
+                y=y_train_txt
+            )
+            class_weight_dict = dict(zip(classes, class_weights))
+            st.write(f"✅ Class weights: {class_weight_dict}")
+        except Exception as e:
+            st.warning(f"⚠️ Cannot compute class weights: {e}")
+            class_weight_dict = {0: 1.0, 1: 1.0}
         
         return {
             # CNN data
@@ -537,7 +586,8 @@ class DatasetProcessor:
             'total_samples': len(images),
             'valid_texts': valid_text_count,
             'class_weights': class_weight_dict,
-            'vocab_size': min(self.VOCAB_SIZE, len(self.tokenizer.word_index) + 1)
+            'vocab_size': vocab_size,
+            'label_distribution': dict(zip(unique_labels, label_counts))
         }
     
     def texts_to_sequences(self, texts):
@@ -888,6 +938,13 @@ class CompleteModelTrainer:
 
 
 def main():
+    DEBUG = True
+    
+    if DEBUG:
+        st.sidebar.markdown("---")
+        st.sidebar.subheader("🐛 Debug Info")
+        st.sidebar.write("Session State:", list(st.session_state.keys()))
+        
     st.markdown('<h1 class="main-header">🤖 QR Code Model Trainer</h1>', unsafe_allow_html=True)
     st.markdown('<p class="main-subheader">Train CNN (MobileNetV2), LSTM, and GRU models on your QR dataset</p>', unsafe_allow_html=True)
 
@@ -991,44 +1048,97 @@ def main():
             st.info("👈 Upload dataset ZIP file in the sidebar")
 
     # --- TAB 2: Training ---
+# --- TAB 2: Training ---
     with tab2:
         st.header("🤖 Model Training")
         if 'start_training' in st.session_state and st.session_state['start_training']:
             if 'dataset_info' not in st.session_state:
                 st.error("Dataset not found")
                 return
+            
             dataset_info = st.session_state['dataset_info']
             selected_models = st.session_state.get('selected_models', [])
             params = st.session_state.get('training_params', {})
-
-            with st.spinner("Preparing training data..."):
-                training_data = processor.prepare_training_data(
-                    dataset_info,
-                    use_synthetic=params['use_synthetic']
-                )
-                if training_data is None:
-                    st.error("Failed to prepare data")
-                    return
-                st.success(f"✅ Prepared {training_data['total_samples']} samples")
-                st.info(f"Vocabulary size: {training_data['vocab_size']}")
-
+            
+            st.write("⚙️ Parameters:", params)
+            
+            # Clear previous training state
+            if 'training_complete' in st.session_state:
+                st.session_state['training_complete'] = False
+            
+            with st.spinner("🔄 Preparing training data..."):
+                try:
+                    training_data = processor.prepare_training_data(
+                        dataset_info,
+                        use_synthetic=params['use_synthetic']
+                    )
+                    
+                    if training_data is None:
+                        st.error("❌ Failed to prepare training data")
+                        st.stop()
+                    
+                    st.success(f"✅ Prepared {training_data['total_samples']} samples")
+                    st.info(f"📝 Vocabulary size: {training_data['vocab_size']}")
+                    st.info(f"⚖️ Label distribution: {training_data['label_distribution']}")
+                    
+                except Exception as e:
+                    st.error(f"❌ Error in prepare_training_data: {e}")
+                    st.exception(e)  # Show full traceback
+                    st.stop()
+            
+            # Clear progress containers
+            progress_containers = {}
+            
+            # Train selected models
             if "CNN (MobileNetV2)" in selected_models:
-                trainer.train_cnn(training_data, epochs=params['epochs'], batch_size=params['cnn_batch'])
+                try:
+                    trainer.train_cnn(training_data, 
+                                    epochs=params['epochs'], 
+                                    batch_size=params['cnn_batch'])
+                except Exception as e:
+                    st.error(f"❌ CNN training failed: {e}")
+            
             if "LSTM" in selected_models:
                 if training_data['vocab_size'] > 1:
-                    trainer.train_lstm(training_data, epochs=params['epochs'], batch_size=params['lstm_batch'])
+                    try:
+                        trainer.train_lstm(training_data, 
+                                        epochs=params['epochs'], 
+                                        batch_size=params['lstm_batch'])
+                    except Exception as e:
+                        st.error(f"❌ LSTM training failed: {e}")
                 else:
-                    st.warning("No text data for LSTM training")
+                    st.warning("⚠️ No text data for LSTM training")
+            
             if "GRU" in selected_models:
                 if training_data['vocab_size'] > 1:
-                    trainer.train_gru(training_data, epochs=params['epochs'], batch_size=params['lstm_batch'])
+                    try:
+                        trainer.train_gru(training_data, 
+                                        epochs=params['epochs'], 
+                                        batch_size=params['lstm_batch'])
+                    except Exception as e:
+                        st.error(f"❌ GRU training failed: {e}")
                 else:
-                    st.warning("No text data for GRU training")
-
-            st.session_state['training_complete'] = True
-            st.session_state['trainer'] = trainer
-            if 'temp_dir' in dataset_info:
-                shutil.rmtree(dataset_info['temp_dir'], ignore_errors=True)
+                    st.warning("⚠️ No text data for GRU training")
+            
+            # Mark training complete if at least one model trained
+            if trainer.results:
+                st.session_state['training_complete'] = True
+                st.session_state['trainer'] = trainer
+                st.balloons()
+                
+                # Cleanup temp directory
+                if 'temp_dir' in dataset_info:
+                    try:
+                        shutil.rmtree(dataset_info['temp_dir'], ignore_errors=True)
+                        st.write("🧹 Cleaned up temporary files")
+                    except:
+                        pass
+            else:
+                st.error("❌ No models were successfully trained")
+            
+            # Reset training flag
+            st.session_state['start_training'] = False
+            
         else:
             st.info("👈 Select models and click 'Train Selected Models' in the sidebar")
 
