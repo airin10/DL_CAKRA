@@ -1158,7 +1158,7 @@ def main():
         cnn_batch = st.slider("CNN Batch Size", 8, 32, 16)
         lstm_batch = st.slider("LSTM/GRU Batch Size", 16, 64, 32)
 
-        if st.button("🚀 Train Selected Models", type="primary", width="stretch"):
+        if st.button("🚀 Train Selected Models", type="primary", use_container_width=True):
             if 'dataset_info' in st.session_state:
                 st.session_state['selected_models'] = selected_models
                 st.session_state['training_params'] = {
@@ -1318,7 +1318,7 @@ def main():
                     for col in ['Accuracy', 'Precision', 'Recall', 'F1-Score', 'AUC']:
                         display_df[col] = display_df[col].apply(lambda x: f"{x:.4f}")
                     display_df['Loss'] = display_df['Loss'].apply(lambda x: f"{x:.6f}")
-                    st.dataframe(display_df, width="stretch")
+                    st.dataframe(display_df, use_container_width=True)
 
                     best_model_name, best_model_results = trainer.get_best_model()
                     st.markdown(f"""
@@ -1415,7 +1415,7 @@ def main():
 
                 st.markdown("---")
                 st.subheader("📦 Download All Models")
-                if st.button("📥 Download All Models as ZIP", width="stretch"):
+                if st.button("📥 Download All Models as ZIP", use_container_width=True):
                     zip_filename = "qr_models.zip"
                     with zipfile.ZipFile(zip_filename, 'w') as zf:
                         for k, f in saved_files.items():
