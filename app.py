@@ -25,22 +25,15 @@ st.set_page_config(
 )
 
 # === IMPORT LIBRARIES ===
-try:
-    import tensorflow as tf
-    from tensorflow.keras import layers, models, Model, Sequential
-    from tensorflow.keras.optimizers import Adam
-    from tensorflow.keras.applications import MobileNetV2
-    from tensorflow.keras.preprocessing.text import Tokenizer
-    from tensorflow.keras.preprocessing.sequence import pad_sequences
-    from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
-    from sklearn.model_selection import train_test_split
-    from sklearn.utils.class_weight import compute_class_weight
-    import pickle
-    ML_AVAILABLE = True
-except ImportError as e:
-    st.warning(f"⚠️ TensorFlow tidak terinstall: {str(e)}")
-    ML_AVAILABLE = False
-
+import tensorflow as tf
+from tensorflow.keras import layers, models, Model, Sequential
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.applications import MobileNetV2
+from tensorflow.keras.preprocessing.text import Tokenizer
+from tensorflow.keras.preprocessing.sequence import pad_sequences
+from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
+from sklearn.model_selection import train_test_split
+from sklearn.utils.class_weight import compute_class_weight
 try:
     from pyzbar.pyzbar import decode
     QR_DECODER_AVAILABLE = True
@@ -938,13 +931,6 @@ class CompleteModelTrainer:
 
 
 def main():
-    DEBUG = True
-    
-    if DEBUG:
-        st.sidebar.markdown("---")
-        st.sidebar.subheader("🐛 Debug Info")
-        st.sidebar.write("Session State:", list(st.session_state.keys()))
-        
     st.markdown('<h1 class="main-header">🤖 QR Code Model Trainer</h1>', unsafe_allow_html=True)
     st.markdown('<p class="main-subheader">Train CNN (MobileNetV2), LSTM, and GRU models on your QR dataset</p>', unsafe_allow_html=True)
 
