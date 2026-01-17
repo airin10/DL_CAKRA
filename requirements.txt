@@ -1,13 +1,6 @@
-# Streamlit (versi terbaru yang kompatibel)
 streamlit>=1.32.0
-
-# TensorFlow + Protobuf (harus sesuai)
 protobuf>=5.28.0
-
-# OpenCV (versi modern untuk Python 3.13)
 opencv-python-headless>=4.10.0
-
-# Dependensi lain (pastikan versi aman)
 pandas>=2.1.0
 numpy>=1.26.0
 scikit-learn>=1.4.0
@@ -16,3 +9,4 @@ seaborn>=0.13.0
 pillow>=10.0.0
 pyzbar>=0.1.9
 plotly>=5.17.0
+tensorflow-cpu>=2.16.0
