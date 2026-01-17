@@ -610,9 +610,12 @@ class CompleteModelTrainer:
         self.results = {}
     
     def build_cnn_model(self):
-        """Build CNN model dengan MobileNetV2"""
+        """Build CNN model dengan MobileNetV2 - Keras 3 Compatible"""
+        # Gunakan Input layer secara eksplisit
+        inputs = layers.Input(shape=(224, 224, 3))
+        
         base_model = MobileNetV2(
-            input_shape=(224, 224, 3),
+            input_tensor=inputs, # Hubungkan input layer di sini
             include_top=False,
             weights="imagenet"
         )
@@ -624,11 +627,12 @@ class CompleteModelTrainer:
         x = layers.Dropout(0.5)(x)
         output = layers.Dense(1, activation="sigmoid")(x)
 
-        model = Model(inputs=base_model.input, outputs=output)
+        model = Model(inputs=inputs, outputs=output) # Gunakan inputs yang didefinisikan tadi
+        
         model.compile(
             optimizer=Adam(learning_rate=0.001),
             loss="binary_crossentropy",
-            metrics=["accuracy", "Precision", "Recall", "AUC"]
+            metrics=["accuracy"] # Sederhanakan metrics dulu untuk testing
         )
         
         return model
@@ -1318,7 +1322,7 @@ def main():
                     for col in ['Accuracy', 'Precision', 'Recall', 'F1-Score', 'AUC']:
                         display_df[col] = display_df[col].apply(lambda x: f"{x:.4f}")
                     display_df['Loss'] = display_df['Loss'].apply(lambda x: f"{x:.6f}")
-                    st.dataframe(display_df, use_container_width=True)
+                    st.dataframe(display_df, width='stretch')
 
                     best_model_name, best_model_results = trainer.get_best_model()
                     st.markdown(f"""
@@ -1410,7 +1414,7 @@ def main():
                                     data=f.read(),
                                     file_name=f"{key}_model.h5",
                                     mime="application/octet-stream",
-                                    width="stretch"
+                                    use_container_width=True
                                 )
 
                 st.markdown("---")
@@ -1427,7 +1431,7 @@ def main():
                             data=f.read(),
                             file_name="all_models.zip",
                             mime="application/zip",
-                            width="stretch"
+                            use_container_width=True
                         )
 
                 if trainer.results:
@@ -1439,7 +1443,7 @@ def main():
                         data=csv,
                         file_name="model_results.csv",
                         mime="text/csv",
-                        width="stretch"
+                        use_container_width=True
                     )
             else:
                 st.info("No models available.")
