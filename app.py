@@ -1158,7 +1158,7 @@ def main():
         cnn_batch = st.slider("CNN Batch Size", 8, 32, 16)
         lstm_batch = st.slider("LSTM/GRU Batch Size", 16, 64, 32)
 
-        if st.button("🚀 Train Selected Models", type="primary", use_container_width=True):
+        if st.button("🚀 Train Selected Models", type="primary", width="stretch"):
             if 'dataset_info' in st.session_state:
                 st.session_state['selected_models'] = selected_models
                 st.session_state['training_params'] = {
@@ -1318,7 +1318,7 @@ def main():
                     for col in ['Accuracy', 'Precision', 'Recall', 'F1-Score', 'AUC']:
                         display_df[col] = display_df[col].apply(lambda x: f"{x:.4f}")
                     display_df['Loss'] = display_df['Loss'].apply(lambda x: f"{x:.6f}")
-                    st.dataframe(display_df, use_container_width=True)
+                    st.dataframe(display_df, width="stretch")
 
                     best_model_name, best_model_results = trainer.get_best_model()
                     st.markdown(f"""
@@ -1410,12 +1410,12 @@ def main():
                                     data=f.read(),
                                     file_name=f"{key}_model.h5",
                                     mime="application/octet-stream",
-                                    use_container_width=True
+                                    width="stretch"
                                 )
 
                 st.markdown("---")
                 st.subheader("📦 Download All Models")
-                if st.button("📥 Download All Models as ZIP", use_container_width=True):
+                if st.button("📥 Download All Models as ZIP", width="stretch"):
                     zip_filename = "qr_models.zip"
                     with zipfile.ZipFile(zip_filename, 'w') as zf:
                         for k, f in saved_files.items():
@@ -1427,7 +1427,7 @@ def main():
                             data=f.read(),
                             file_name="all_models.zip",
                             mime="application/zip",
-                            use_container_width=True
+                            width="stretch"
                         )
 
                 if trainer.results:
@@ -1439,7 +1439,7 @@ def main():
                         data=csv,
                         file_name="model_results.csv",
                         mime="text/csv",
-                        use_container_width=True
+                        width="stretch"
                     )
             else:
                 st.info("No models available.")
