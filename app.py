@@ -1322,7 +1322,7 @@ def main():
                     for col in ['Accuracy', 'Precision', 'Recall', 'F1-Score', 'AUC']:
                         display_df[col] = display_df[col].apply(lambda x: f"{x:.4f}")
                     display_df['Loss'] = display_df['Loss'].apply(lambda x: f"{x:.6f}")
-                    st.dataframe(display_df, width='stretch')
+                    st.dataframe(display_df, use_container_width=True)
 
                     best_model_name, best_model_results = trainer.get_best_model()
                     st.markdown(f"""
