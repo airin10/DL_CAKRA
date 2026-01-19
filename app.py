@@ -347,12 +347,18 @@ class DatasetProcessor:
         }
 
 class ModelEvaluator:
-    """Class untuk evaluasi model yang sudah dilatih"""
-    
     def __init__(self):
-        self.models = {}
-        self.evaluation_results = {}
-        self.predictions = {}
+        # Gunakan session state untuk persistensi
+        if 'loaded_models' not in st.session_state:
+            st.session_state['loaded_models'] = {}
+        if 'evaluation_results' not in st.session_state:
+            st.session_state['evaluation_results'] = {}
+        if 'predictions' not in st.session_state:
+            st.session_state['predictions'] = {}
+        
+        self.models = st.session_state['loaded_models']
+        self.evaluation_results = st.session_state['evaluation_results']
+        self.predictions = st.session_state['predictions']
     
     def load_model_quishing_specific(self, model_type, model_file):
         """Load model dengan arsitektur spesifik penelitian quishing Anda"""
@@ -372,7 +378,7 @@ class ModelEvaluator:
                     'GRU': tf.keras.layers.GRU,
                     'Embedding': tf.keras.layers.Embedding,
                     'GlobalMaxPooling1D': tf.keras.layers.GlobalMaxPooling1D,
-                    'GlobalMaxPooling1D': tf.keras.layers.GlobalMaxPooling1D,  # Duplicate untuk pastikan
+                    'GlobalAveragePooling1D': tf.keras.layers.GlobalAveragePooling1D,
                     'Dense': tf.keras.layers.Dense,
                     'Dropout': tf.keras.layers.Dropout,
                     'Sequential': tf.keras.Sequential,
@@ -406,6 +412,8 @@ class ModelEvaluator:
             
             # Simpan model
             self.models[model_type] = model
+            st.session_state['loaded_models'] = self.models  # Simpan ke session
+            
             os.unlink(tmp_path)
             
             # Tampilkan arsitektur
@@ -418,7 +426,7 @@ class ModelEvaluator:
             import traceback
             st.error(f"Traceback: {traceback.format_exc()}")
             return False
-
+        
     def reconstruct_quishing_model(self, model_type, weights_path):
         """Bangun ulang model dengan arsitektur penelitian quishing Anda"""
         
@@ -540,41 +548,16 @@ class ModelEvaluator:
         return model
 
     def display_model_architecture(self, model, model_type):
-        """Tampilkan arsitektur model dengan detail"""
-        st.write(f"**{model_type.upper()} Model Architecture:**")
+        st.write(f"\n📐 **{model_type.upper()} Model Architecture**")
+        st.write("="*60)
         
-        # Summary dalam text
-        model_summary = []
-        model.summary(print_fn=lambda x: model_summary.append(x))
-        
-        with st.expander(f"Show {model_type.upper()} Model Summary", expanded=True):
-            for line in model_summary:
-                st.text(line)
-        
-        # Visual layer information
-        st.write("**Layer Details:**")
-        layer_info = []
         for i, layer in enumerate(model.layers):
-            layer_type = type(layer).__name__
-            output_shape = str(layer.output_shape)
-            params = layer.count_params()
+            try:
+                output_shape = layer.output_shape
+            except:
+                output_shape = "Dynamic"
             
-            layer_info.append({
-                'Layer #': i,
-                'Name': layer.name,
-                'Type': layer_type,
-                'Output Shape': output_shape,
-                'Params': f"{params:,}"
-            })
-        
-        # Tampilkan sebagai tabel
-        import pandas as pd
-        df_layers = pd.DataFrame(layer_info)
-        st.dataframe(df_layers, use_container_width=True)
-        
-        # Highlight GlobalMaxPooling1D jika ada
-        if any('GlobalMaxPooling1D' in str(type(layer)) for layer in model.layers):
-            st.success("🌟 This model includes GlobalMaxPooling1D (Unique feature of your research!)")
+            st.write(f"{i+1:02d}. **{layer.name}** | Type: {layer.__class__.__name__} | Output: {output_shape}")
     
     def evaluate_model(self, model_type, evaluation_data):
         """Evaluasi model pada data evaluasi"""
@@ -628,6 +611,10 @@ class ModelEvaluator:
                 'y_pred': y_pred,
                 'y_pred_proba': y_pred_proba
             }
+            
+            # Simpan ke session state
+            st.session_state['evaluation_results'] = self.evaluation_results
+            st.session_state['predictions'] = self.predictions
             
             return True
             
@@ -734,12 +721,17 @@ def plot_metrics_comparison(comparison_df):
     return fig
 
 def main():
+    # Inisialisasi evaluator di session state
+    if 'evaluator' not in st.session_state:
+        st.session_state.evaluator = ModelEvaluator()
+    
+    evaluator = st.session_state.evaluator
+    
     st.markdown('<div class="hero-container">', unsafe_allow_html=True)
     st.markdown('<h1 class="hero-title">📊 QR Code Model Evaluator</h1>', unsafe_allow_html=True)
     st.markdown('<p class="hero-subtitle">Upload pretrained models and evaluate performance without training</p>', unsafe_allow_html=True)
     st.markdown('</div>', unsafe_allow_html=True)
     
-    evaluator = ModelEvaluator()
     processor = DatasetProcessor()
     
     with st.sidebar:
@@ -748,6 +740,7 @@ def main():
         uploaded_eval_zip = st.file_uploader(
             "Upload dataset ZIP untuk evaluasi",
             type=['zip'],
+            key="dataset_uploader",
             help="Berisi folder 'benign' dan 'malicious' dengan gambar QR code"
         )
         
@@ -758,126 +751,36 @@ def main():
                     st.success("✅ Dataset evaluasi siap!")
                     st.session_state['eval_dataset_info'] = eval_dataset_info
         
-        # ============================================
-        # PERBAIKAN INI: KELUARKAN DARI KONDISI if uploaded_eval_zip
-        # ============================================
-        st.markdown("---")
-        st.header("🎯 Model Loading (Research Specific)")
-        
-        # Pilihan untuk memilih tipe model
-        model_to_load = st.selectbox(
-            "Select Model Type to Load:",
-            ["CNN (Visual-Based)", "LSTM (URL-Based, max_len=200)", "GRU (URL-Based, max_len=50)"],
-            help="Select based on your research architecture"
-        )
-        
-        # Upload berdasarkan pilihan
-        uploaded_model = st.file_uploader(
-            f"Upload {model_to_load} model",
-            type=["h5", "keras"],
-            key=f"upload_{model_to_load.replace(' ', '_')}"
-        )
-        
-        if uploaded_model:
-            # Tentukan model_type berdasarkan pilihan
-            if "CNN" in model_to_load:
-                model_type = 'cnn'
-                st.info("**Expected CNN Architecture:** Conv2D → MaxPooling2D → Flatten → Dense")
-            elif "LSTM" in model_to_load:
-                model_type = 'lstm'
-                st.info("**Expected LSTM Architecture:** Embedding → LSTM → GlobalMaxPooling1D → Dense")
-            else:  # GRU
-                model_type = 'gru'
-                st.info("**Expected GRU Architecture:** Embedding → GRU → GlobalMaxPooling1D → Dense")
-            
-            if st.button(f"✅ Load {model_type.upper()} Model", key=f"load_{model_type}"):
-                with st.spinner(f"Loading {model_type.upper()} with research architecture..."):
-                    if evaluator.load_model_quishing_specific(model_type, uploaded_model):
-                        st.success(f"{model_type.upper()} model loaded successfully!")
-                        
-                        # Tampilkan parameter spesifik
-                        if model_type in ['lstm', 'gru']:
-                            st.write(f"**Parameters:**")
-                            st.write(f"- Model Type: {model_type.upper()}")
-                            st.write(f"- Architecture: RNN with GlobalMaxPooling1D")
-                            st.write(f"- Max Sequence Length: {200 if model_type == 'lstm' else 50}")
-                            st.write(f"- Unique Feature: GlobalMaxPooling1D after RNN layer")
-        
-        # ============================================
-        # TAMBAHKAN EMERGENCY OPTION UNTUK GRU
-        # ============================================
-        st.markdown("---")
-        st.header("🆘 Emergency GRU Loader")
-        
-        emergency_mode = st.checkbox(
-            "Enable Emergency Mode for GRU", 
-            help="Use if GRU model still fails to load"
-        )
-        
-        if emergency_mode:
-            st.warning("⚠️ Emergency Mode Active")
-            
-            uploaded_emergency_gru = st.file_uploader(
-                "Upload GRU weights file (.h5)",
-                type=["h5"],
-                key="emergency_gru"
-            )
-            
-            if uploaded_emergency_gru and st.button("🚨 Load GRU with Emergency Mode"):
-                with st.spinner("Building emergency GRU model..."):
-                    # Bangun model GRU dengan arsitektur yang lebih sederhana
-                    vocab_size = 1000
-                    max_len = 50
-                    
-                    emergency_gru = tf.keras.Sequential([
-                        tf.keras.layers.Input(shape=(max_len,)),
-                        tf.keras.layers.Embedding(vocab_size, 32),
-                        tf.keras.layers.GRU(32, return_sequences=False),  # Tanpa return_sequences
-                        tf.keras.layers.Dense(1, activation='sigmoid')
-                    ])
-                    
-                    emergency_gru.compile(
-                        optimizer='adam',
-                        loss='binary_crossentropy',
-                        metrics=['accuracy']
-                    )
-                    
-                    # Load weights
-                    with tempfile.NamedTemporaryFile(delete=False, suffix='.h5') as f:
-                        f.write(uploaded_emergency_gru.getvalue())
-                        temp_path = f.name
-                    
-                    try:
-                        emergency_gru.load_weights(temp_path, by_name=True, skip_mismatch=True)
-                        os.unlink(temp_path)
-                        
-                        evaluator.models['gru'] = emergency_gru
-                        st.success("✅ Emergency GRU model loaded!")
-                        
-                    except Exception as e:
-                        st.error(f"❌ Emergency load failed: {str(e)}")
-        
         st.markdown("---")
         st.header("🚀 Start Evaluation")
         
+        # Cek apakah ada model yang di-load
+        models_loaded = bool(evaluator.models)
+        dataset_loaded = 'eval_dataset_info' in st.session_state
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("Models Loaded", len(evaluator.models))
+        with col2:
+            st.metric("Dataset Ready", "✅" if dataset_loaded else "❌")
+        
         if st.button("📊 Evaluate All Models", type="primary", use_container_width=True):
-            if 'eval_dataset_info' in st.session_state and evaluator.models:
+            if models_loaded and dataset_loaded:
                 st.session_state['start_evaluation'] = True
+                st.rerun()
             else:
-                if 'eval_dataset_info' not in st.session_state:
-                    st.warning("Please upload evaluation dataset first!")
-                if not evaluator.models:
-                    st.warning("Please upload at least one model!")
+                if not models_loaded:
+                    st.error("Please load at least one model in the 'Load Models' tab!")
+                if not dataset_loaded:
+                    st.error("Please upload evaluation dataset first!")
         
         st.markdown("---")
         st.header("🔄 Reset App")
         if st.button("Clear All Models & Data"):
-            st.cache_data.clear()
-            st.cache_resource.clear()
             st.session_state.clear()
             st.rerun()
     
-    tab1, tab2, tab3 = st.tabs(["📋 Model Status", "📈 Evaluation", "📊 Comparison"])
+    tab1, tab2, tab3, tab4 = st.tabs(["📋 Model Status", "🎯 Load Models", "📈 Evaluation", "📊 Comparison"])
     
     # --- TAB 1: Model Status ---
     with tab1:
@@ -892,8 +795,12 @@ def main():
                 st.success("✅ Model Loaded")
                 st.write(f"Layers: {len(evaluator.models['cnn'].layers)}")
                 st.write(f"Parameters: {evaluator.models['cnn'].count_params():,}")
+                # Tampilkan arsitektur singkat
+                with st.expander("View Architecture"):
+                    evaluator.display_model_architecture(evaluator.models['cnn'], 'cnn')
             else:
                 st.info("⏳ No model loaded")
+                st.write("Go to 'Load Models' tab to upload CNN model")
             st.markdown('</div>', unsafe_allow_html=True)
         
         with col2:
@@ -903,8 +810,11 @@ def main():
                 st.success("✅ Model Loaded")
                 st.write(f"Layers: {len(evaluator.models['lstm'].layers)}")
                 st.write(f"Parameters: {evaluator.models['lstm'].count_params():,}")
+                with st.expander("View Architecture"):
+                    evaluator.display_model_architecture(evaluator.models['lstm'], 'lstm')
             else:
                 st.info("⏳ No model loaded")
+                st.write("Go to 'Load Models' tab to upload LSTM model")
             st.markdown('</div>', unsafe_allow_html=True)
         
         with col3:
@@ -914,8 +824,11 @@ def main():
                 st.success("✅ Model Loaded")
                 st.write(f"Layers: {len(evaluator.models['gru'].layers)}")
                 st.write(f"Parameters: {evaluator.models['gru'].count_params():,}")
+                with st.expander("View Architecture"):
+                    evaluator.display_model_architecture(evaluator.models['gru'], 'gru')
             else:
                 st.info("⏳ No model loaded")
+                st.write("Go to 'Load Models' tab to upload GRU model")
             st.markdown('</div>', unsafe_allow_html=True)
         
         # Dataset Status
@@ -938,6 +851,8 @@ def main():
                     benign_count = len([f for f in os.listdir(eval_info['benign_path']) 
                                       if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp'))])
                     st.metric("Benign Samples", benign_count)
+                else:
+                    st.metric("Benign Samples", 0)
             
             if eval_info['malicious_path'] and os.path.exists(eval_info['malicious_path']):
                 malicious_count = len([f for f in os.listdir(eval_info['malicious_path']) 
@@ -950,11 +865,97 @@ def main():
                 with col5:
                     total_samples = benign_count + malicious_count if 'benign_count' in locals() else malicious_count
                     st.metric("Total Samples", total_samples)
+            else:
+                st.warning("Malicious folder not found")
         else:
             st.info("👈 Upload evaluation dataset in the sidebar")
     
-    # --- TAB 2: Evaluation ---
+    # --- TAB 2: Load Models ---
     with tab2:
+        st.header("🎯 Load Research Models")
+        st.info("Upload your trained models here. Each model type has its own upload section.")
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.markdown('<div class="model-card cnn-card">', unsafe_allow_html=True)
+            st.subheader("📷 CNN Model")
+            st.write("Visual-based QR code detection")
+            st.write("**Expected Architecture:**")
+            st.write("- Conv2D → MaxPooling2D")
+            st.write("- Conv2D → MaxPooling2D")
+            st.write("- Flatten → Dense → Output")
+            
+            uploaded_cnn = st.file_uploader(
+                "Upload CNN model (.h5/.keras)",
+                type=["h5", "keras"],
+                key="upload_cnn_tab",
+                help="Upload your trained CNN model file"
+            )
+            
+            if uploaded_cnn and st.button("✅ Load CNN Model", key="load_cnn_tab", use_container_width=True):
+                with st.spinner("Loading CNN model..."):
+                    if evaluator.load_model_quishing_specific('cnn', uploaded_cnn):
+                        st.success("CNN model loaded successfully!")
+                        st.balloons()
+            st.markdown('</div>', unsafe_allow_html=True)
+        
+        with col2:
+            st.markdown('<div class="model-card lstm-card">', unsafe_allow_html=True)
+            st.subheader("📝 LSTM Model")
+            st.write("URL/text sequence detection")
+            st.write("**Expected Architecture:**")
+            st.write("- Embedding layer")
+            st.write("- LSTM with GlobalMaxPooling1D")
+            st.write("- Dense layers → Output")
+            
+            uploaded_lstm = st.file_uploader(
+                "Upload LSTM model (.h5/.keras)",
+                type=["h5", "keras"],
+                key="upload_lstm_tab",
+                help="Upload your trained LSTM model file"
+            )
+            
+            if uploaded_lstm and st.button("✅ Load LSTM Model", key="load_lstm_tab", use_container_width=True):
+                with st.spinner("Loading LSTM model..."):
+                    if evaluator.load_model_quishing_specific('lstm', uploaded_lstm):
+                        st.success("LSTM model loaded successfully!")
+                        st.balloons()
+            st.markdown('</div>', unsafe_allow_html=True)
+        
+        with col3:
+            st.markdown('<div class="model-card gru-card">', unsafe_allow_html=True)
+            st.subheader("🌀 GRU Model")
+            st.write("URL/text sequence detection")
+            st.write("**Expected Architecture:**")
+            st.write("- Embedding layer")
+            st.write("- GRU with GlobalMaxPooling1D")
+            st.write("- Dense layers → Output")
+            
+            uploaded_gru = st.file_uploader(
+                "Upload GRU model (.h5/.keras)",
+                type=["h5", "keras"],
+                key="upload_gru_tab",
+                help="Upload your trained GRU model file"
+            )
+            
+            if uploaded_gru and st.button("✅ Load GRU Model", key="load_gru_tab", use_container_width=True):
+                with st.spinner("Loading GRU model..."):
+                    if evaluator.load_model_quishing_specific('gru', uploaded_gru):
+                        st.success("GRU model loaded successfully!")
+                        st.balloons()
+            st.markdown('</div>', unsafe_allow_html=True)
+        
+        st.markdown("---")
+        st.header("📊 Current Load Status")
+        st.write(f"**Total models loaded:** {len(evaluator.models)}")
+        
+        if evaluator.models:
+            for model_name, model in evaluator.models.items():
+                st.write(f"- **{model_name.upper()}**: {model.count_params():,} parameters")
+
+    # --- TAB 3: Evaluation ---
+    with tab3:
         st.header("📈 Model Evaluation")
         
         if 'start_evaluation' in st.session_state and st.session_state['start_evaluation']:
@@ -976,6 +977,10 @@ def main():
             status_text = st.empty()
             
             models_to_evaluate = list(evaluator.models.keys())
+            
+            if not models_to_evaluate:
+                st.error("No models loaded to evaluate!")
+                st.stop()
             
             for idx, model_type in enumerate(models_to_evaluate):
                 status_text.text(f"Evaluating {model_type.upper()} model...")
@@ -1035,13 +1040,25 @@ def main():
             st.session_state['start_evaluation'] = False
             
         else:
-            st.info("👈 Upload models and dataset, then click 'Evaluate All Models'")
+            st.info("👈 **Steps to evaluate:**")
+            st.write("1. Go to 'Load Models' tab and upload at least one model")
+            st.write("2. Upload evaluation dataset in the sidebar")
+            st.write("3. Click 'Evaluate All Models' button in the sidebar")
+            
+            # Show current status
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("Models Ready", len(evaluator.models), 
+                         delta="Upload in 'Load Models' tab" if len(evaluator.models) == 0 else None)
+            with col2:
+                dataset_ready = 'eval_dataset_info' in st.session_state
+                st.metric("Dataset Ready", "✅ Yes" if dataset_ready else "❌ No")
     
-    # --- TAB 3: Comparison ---
-    with tab3:
+    # --- TAB 4: Comparison ---
+    with tab4:
         st.header("📊 Model Comparison")
         
-        if st.session_state.get('evaluation_complete'):
+        if st.session_state.get('evaluation_complete', False):
             evaluator = st.session_state.get('evaluator')
             
             if evaluator and evaluator.evaluation_results:
@@ -1112,9 +1129,11 @@ def main():
                             use_container_width=True
                         )
             else:
-                st.info("No evaluation results yet.")
+                st.info("No evaluation results yet. Run evaluation first in the 'Evaluation' tab.")
         else:
-            st.info("Evaluation results will appear here after completing evaluation.")
+            st.info("👈 **Run evaluation first to see comparison results.**")
+            st.write("1. Complete evaluation in the 'Evaluation' tab")
+            st.write("2. Results will appear here automatically")
 
 if __name__ == "__main__":
     main()
