@@ -1,11 +1,12 @@
 """
-QR Code Security Analyzer - MODERN UI VERSION dengan CNN, LSTM, GRU
+QR Code Security Model Evaluator - Streamlit App
+Fokus: Evaluasi & Visualisasi Model Tanpa Training
 """
+
 import streamlit as st
 import numpy as np
 import pandas as pd
 import cv2
-import io
 import os
 import zipfile
 import tempfile
@@ -18,27 +19,23 @@ warnings.filterwarnings('ignore')
 
 # === PAGE CONFIG ===
 st.set_page_config(
-    page_title="QR Code Model Trainer",
-    page_icon="🤖",
+    page_title="QR Model Evaluator",
+    page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
 # === IMPORT LIBRARIES ===
 import tensorflow as tf
-from tensorflow.keras import layers, models, Model, Sequential
-from tensorflow.keras.optimizers import Adam
-from tensorflow.keras.applications import MobileNetV2
-from tensorflow.keras.preprocessing.text import Tokenizer
-from tensorflow.keras.preprocessing.sequence import pad_sequences
-from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
-from sklearn.model_selection import train_test_split
-from sklearn.utils.class_weight import compute_class_weight
-try:
-    from pyzbar.pyzbar import decode
-    QR_DECODER_AVAILABLE = True
-except ImportError:
-    QR_DECODER_AVAILABLE = False
+from tensorflow.keras.models import load_model
+from tensorflow.keras import Sequential
+from tensorflow.keras.layers import Embedding, GRU, LSTM, Dense, Dropout
+from sklearn.metrics import (
+    accuracy_score, precision_score, recall_score, 
+    f1_score, roc_auc_score, confusion_matrix, 
+    classification_report
+)
+import seaborn as sns
 
 # === CUSTOM CSS MODERN ===
 st.markdown("""
@@ -97,29 +94,8 @@ body, .stApp, [class*="css"] {
     margin: 0.5rem auto 0;
 }
 
-/* Dataset Card */
-.dataset-card {
-    background: var(--gray-100);
-    border-radius: 16px;
-    padding: 1.25rem;
-    margin: 1rem 0;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.05);
-}
-.qr-preview {
-    background: white;
-    border: 1px dashed #cbd5e1;
-    border-radius: 12px;
-    padding: 0.75rem;
-    margin-top: 0.5rem;
-    font-family: monospace;
-    font-size: 0.85rem;
-    max-height: 80px;
-    overflow: auto;
-    word-break: break-all;
-}
-
-/* Training Cards */
-.training-card {
+/* Model Card */
+.model-card {
     background: white;
     border-radius: 16px;
     padding: 1.5rem;
@@ -128,7 +104,7 @@ body, .stApp, [class*="css"] {
     transition: all 0.3s ease;
     border-left: 4px solid #cbd5e1;
 }
-.training-card:hover {
+.model-card:hover {
     transform: translateY(-2px);
     box-shadow: 0 6px 16px rgba(0,0,0,0.1);
 }
@@ -213,122 +189,16 @@ body, .stApp, [class*="css"] {
 """, unsafe_allow_html=True)
 
 class DatasetProcessor:
-    """Class untuk processing dataset upload"""
+    """Class untuk processing dataset upload untuk evaluasi"""
     
     def __init__(self):
         self.IMG_SIZE = (224, 224)
         self.MAX_LEN = 200
         self.VOCAB_SIZE = 1000
         self.tokenizer = None
-        self.dataset_info = {}
-    
-    def extract_all_files(self, zip_path, extract_to):
-        """Extract semua file dari ZIP"""
-        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-            zip_ref.extractall(extract_to)
-    
-    def find_folders(self, base_path):
-        """Cari folder benign dan malicious"""
-        benign_path = None
-        malicious_path = None
-        
-        for root, dirs, files in os.walk(base_path):
-            dirs_lower = [d.lower() for d in dirs]
-            
-            if 'benign' in dirs_lower:
-                idx = dirs_lower.index('benign')
-                benign_path = os.path.join(root, dirs[idx])
-            
-            if 'malicious' in dirs_lower:
-                idx = dirs_lower.index('malicious')
-                malicious_path = os.path.join(root, dirs[idx])
-        
-        return benign_path, malicious_path
-    
-    def count_images_in_folder(self, folder_path):
-        """Hitung gambar di folder"""
-        if not folder_path or not os.path.exists(folder_path):
-            return 0, []
-        
-        image_extensions = ['.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.gif']
-        image_files = []
-        
-        for filename in os.listdir(folder_path):
-            if any(filename.lower().endswith(ext) for ext in image_extensions):
-                image_files.append(os.path.join(folder_path, filename))
-        
-        return len(image_files), image_files[:5]
-    
-    def extract_qr_content_robust(self, image_path):
-        """Extract QR content dengan multiple attempts"""
-        try:
-            img = cv2.imread(image_path)
-            if img is None:
-                return ""
-            
-            decoded = decode(img)
-            if decoded:
-                return decoded[0].data.decode('utf-8', errors='ignore')
-            
-            # Try preprocessing
-            try:
-                gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-                _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-                decoded = decode(thresh)
-                if decoded:
-                    return decoded[0].data.decode('utf-8', errors='ignore')
-            except:
-                pass
-            
-            return ""
-            
-        except Exception as e:
-            return ""
-    
-    def generate_synthetic_text(self, label):
-        """Generate synthetic text untuk training"""
-        import random
-        
-        if label == 0:  # benign
-            templates = [
-                "https://safe-website.com/login",
-                "WIFI:S:Network;T:WPA2;P:password123;;",
-                "mailto:contact@company.com",
-                "BEGIN:VCARD\nFN:John Doe\nTEL:+1234567890\nEND:VCARD",
-                "https://www.trusted-site.com",
-                "geo:40.7128,-74.0060",
-                "SMSTO:+1234567890:Hello",
-                "MATMSG:TO:email@test.com;SUB:Test;BODY:Message;;",
-                "https://docs.google.com/document",
-                "bit.ly/safe-link-123"
-            ]
-        else:  # malicious
-            templates = [
-                "http://malicious-site.com/login.php",
-                "javascript:alert('XSS')",
-                "data:text/html;base64,PHNjcmlwdD5hbGVydCgnWCcpPC9zY3JpcHQ+",
-                "http://192.168.1.1:8080/admin",
-                "https://bit.ly/suspicious-xyz",
-                "Download free virus: http://bad.exe",
-                "You won $1,000,000! Claim: http://scam.com",
-                "Account locked! Reset: http://phishing-bank.com",
-                "Free Bitcoin: http://crypto-scam.com",
-                "http://free-gift-cards.xyz/login"
-            ]
-        
-        base_text = random.choice(templates)
-        variations = [
-            "",
-            "?id=" + str(random.randint(1000, 9999)),
-            "&session=" + ''.join(random.choices('abcdefghijklmnopqrstuvwxyz0123456789', k=8)),
-            "#" + ''.join(random.choices('abcdefghijklmnopqrstuvwxyz', k=5))
-        ]
-        
-        return base_text + random.choice(variations)
     
     def process_zip_file(self, uploaded_zip):
-        """Process uploaded ZIP file"""
-        
+        """Process uploaded ZIP file untuk mendapatkan data evaluasi"""
         temp_dir = tempfile.mkdtemp()
         
         try:
@@ -339,28 +209,29 @@ class DatasetProcessor:
             extract_path = os.path.join(temp_dir, 'extracted')
             os.makedirs(extract_path, exist_ok=True)
             
-            self.extract_all_files(zip_path, extract_path)
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                zip_ref.extractall(extract_path)
             
-            benign_path, malicious_path = self.find_folders(extract_path)
+            # Cari folder benign dan malicious
+            benign_path = None
+            malicious_path = None
             
-            benign_count, benign_samples = self.count_images_in_folder(benign_path)
-            malicious_count, malicious_samples = self.count_images_in_folder(malicious_path)
+            for root, dirs, files in os.walk(extract_path):
+                dirs_lower = [d.lower() for d in dirs]
+                
+                if 'benign' in dirs_lower:
+                    idx = dirs_lower.index('benign')
+                    benign_path = os.path.join(root, dirs[idx])
+                
+                if 'malicious' in dirs_lower:
+                    idx = dirs_lower.index('malicious')
+                    malicious_path = os.path.join(root, dirs[idx])
             
-            dataset_info = {
-                'total_images': benign_count + malicious_count,
-                'benign_count': benign_count,
-                'malicious_count': malicious_count,
-                'benign_samples': benign_samples,
-                'malicious_samples': malicious_samples,
+            return {
                 'benign_path': benign_path,
                 'malicious_path': malicious_path,
-                'extract_path': extract_path,
-                'has_benign': benign_count > 0,
-                'has_malicious': malicious_count > 0,
                 'temp_dir': temp_dir
             }
-            
-            return dataset_info
             
         except Exception as e:
             st.error(f"Error processing ZIP: {str(e)}")
@@ -368,1089 +239,882 @@ class DatasetProcessor:
                 shutil.rmtree(temp_dir, ignore_errors=True)
             return None
     
-    def prepare_training_data(self, dataset_info, use_synthetic=True):
-        """Prepare data untuk semua model"""
+    def prepare_evaluation_data(self, dataset_info, max_samples=100):
+        """Prepare data evaluasi untuk semua model"""
         images = []
         texts = []
         labels = []
-        valid_text_count = 0
-
-        # === DEBUG LOG ===
-        st.write("🔍 Debug: Starting data preparation...")
+        
+        # Generate synthetic text untuk evaluasi (untuk LSTM/GRU)
+        def generate_text(label):
+            import random
+            if label == 0:  # benign
+                templates = [
+                    "https://safe-website.com/login",
+                    "WIFI:S:Network;T:WPA2;P:password123;;",
+                    "https://www.trusted-site.com",
+                    "mailto:contact@company.com",
+                    "BEGIN:VCARD\nFN:John Doe\nTEL:+1234567890\nEND:VCARD"
+                ]
+            else:  # malicious
+                templates = [
+                    "http://malicious-site.com/login.php",
+                    "javascript:alert('XSS')",
+                    "https://bit.ly/suspicious-xyz",
+                    "Download free virus: http://bad.exe",
+                    "You won $1,000,000! Claim: http://scam.com"
+                ]
+            return random.choice(templates)
         
         # Process benign images
-        if dataset_info['has_benign'] and dataset_info['benign_path']:
-            st.write(f"🔍 Processing benign images from: {dataset_info['benign_path']}")
-            for filename in os.listdir(dataset_info['benign_path']):
-                if filename.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp')):
+        if dataset_info['benign_path'] and os.path.exists(dataset_info['benign_path']):
+            benign_files = [f for f in os.listdir(dataset_info['benign_path']) 
+                          if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp'))]
+            
+            for filename in benign_files[:max_samples//2]:
+                try:
                     img_path = os.path.join(dataset_info['benign_path'], filename)
-                    
-                    try:
-                        img = cv2.imread(img_path)
-                        if img is not None:
-                            img_resized = cv2.resize(img, self.IMG_SIZE)
-                            img_resized = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB)
-                            images.append(img_resized)
-                            
-                            # Untuk LSTM/GRU
-                            text_content = self.extract_qr_content_robust(img_path)
-                            if text_content:
-                                texts.append(text_content)
-                                valid_text_count += 1
-                            elif use_synthetic:
-                                texts.append(self.generate_synthetic_text(0))
-                            else:
-                                texts.append("")
-                            
-                            labels.append(0)  # benign
-                    except Exception as e:
-                        st.write(f"⚠️ Error processing {filename}: {e}")
-                        continue
+                    img = cv2.imread(img_path)
+                    if img is not None:
+                        img_resized = cv2.resize(img, self.IMG_SIZE)
+                        img_resized = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB)
+                        images.append(img_resized)
+                        texts.append(generate_text(0))
+                        labels.append(0)
+                except:
+                    continue
         
         # Process malicious images
-        if dataset_info['has_malicious'] and dataset_info['malicious_path']:
-            st.write(f"🔍 Processing malicious images from: {dataset_info['malicious_path']}")
-            for filename in os.listdir(dataset_info['malicious_path']):
-                if filename.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp')):
+        if dataset_info['malicious_path'] and os.path.exists(dataset_info['malicious_path']):
+            malicious_files = [f for f in os.listdir(dataset_info['malicious_path']) 
+                             if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp'))]
+            
+            for filename in malicious_files[:max_samples//2]:
+                try:
                     img_path = os.path.join(dataset_info['malicious_path'], filename)
-                    
-                    try:
-                        img = cv2.imread(img_path)
-                        if img is not None:
-                            img_resized = cv2.resize(img, self.IMG_SIZE)
-                            img_resized = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB)
-                            images.append(img_resized)
-                            
-                            text_content = self.extract_qr_content_robust(img_path)
-                            if text_content:
-                                texts.append(text_content)
-                                valid_text_count += 1
-                            elif use_synthetic:
-                                texts.append(self.generate_synthetic_text(1))
-                            else:
-                                texts.append("")
-                            
-                            labels.append(1)  # malicious
-                    except Exception as e:
-                        st.write(f"⚠️ Error processing {filename}: {e}")
-                        continue
+                    img = cv2.imread(img_path)
+                    if img is not None:
+                        img_resized = cv2.resize(img, self.IMG_SIZE)
+                        img_resized = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB)
+                        images.append(img_resized)
+                        texts.append(generate_text(1))
+                        labels.append(1)
+                except:
+                    continue
         
-        # === CHECK IF DATA EXISTS ===
         if len(images) == 0:
-            st.error("❌ Tidak ada gambar yang berhasil diproses!")
-            st.write(f"Benign path exists: {os.path.exists(dataset_info['benign_path']) if dataset_info['benign_path'] else False}")
-            st.write(f"Malicious path exists: {os.path.exists(dataset_info['malicious_path']) if dataset_info['malicious_path'] else False}")
+            st.error("❌ Tidak ada gambar yang berhasil diproses untuk evaluasi!")
             return None
         
-        # === CONVERT TO NUMPY ===
-        st.write(f"🔍 Convert {len(images)} images to numpy...")
+        # Convert to numpy arrays
         images_array = np.array(images, dtype='float32') / 255.0
         labels_array = np.array(labels)
         texts_array = np.array(texts)
         
-        st.write(f"✅ Data shape: Images={images_array.shape}, Labels={labels_array.shape}")
+        # Prepare text sequences untuk LSTM/GRU
+        from tensorflow.keras.preprocessing.text import Tokenizer
+        from tensorflow.keras.preprocessing.sequence import pad_sequences
         
-        # === CHECK LABEL DISTRIBUTION ===
-        unique_labels, label_counts = np.unique(labels_array, return_counts=True)
-        st.write(f"📊 Label distribution: {dict(zip(unique_labels, label_counts))}")
+        # Buat tokenizer sederhana
+        self.tokenizer = Tokenizer(
+            num_words=self.VOCAB_SIZE,
+            char_level=False,
+            lower=True,
+            oov_token='<OOV>'
+        )
+        self.tokenizer.fit_on_texts(texts_array)
         
-        if len(unique_labels) < 2:
-            st.error(f"❌ Hanya ada {len(unique_labels)} kelas. Butuh minimal 2 kelas (benign & malicious).")
-            return None
-        
-        # === SAFE SPLIT WITH ERROR HANDLING ===
-        try:
-            indices = np.arange(len(images_array))
-            
-            # Split untuk CNN
-            if len(indices) >= 10 and min(label_counts) >= 2:
-                # Cukup data untuk stratified split
-                train_idx_cnn, test_idx_cnn = train_test_split(
-                    indices,
-                    test_size=0.2,
-                    random_state=42,
-                    stratify=labels_array
-                )
-                st.write("✅ CNN split: Stratified")
-            else:
-                # Data sedikit, gunakan random split
-                st.warning("⚠️ Data sedikit, menggunakan random split tanpa stratify")
-                train_idx_cnn, test_idx_cnn = train_test_split(
-                    indices,
-                    test_size=0.2,
-                    random_state=42
-                )
-            
-            # Split untuk text models
-            if len(indices) >= 10 and min(label_counts) >= 2:
-                train_idx_txt, test_idx_txt = train_test_split(
-                    indices,
-                    test_size=0.2,
-                    random_state=43  # Seed berbeda
-                )
-                st.write("✅ Text split: Stratified")
-            else:
-                train_idx_txt, test_idx_txt = train_test_split(
-                    indices,
-                    test_size=0.2,
-                    random_state=43
-                )
-            
-        except Exception as e:
-            st.error(f"❌ Error dalam train_test_split: {e}")
-            # Fallback: manual split
-            st.warning("⚠️ Menggunakan manual split...")
-            split_idx = int(len(images_array) * 0.8)
-            train_idx_cnn = np.arange(split_idx)
-            test_idx_cnn = np.arange(split_idx, len(images_array))
-            train_idx_txt = train_idx_cnn.copy()
-            test_idx_txt = test_idx_cnn.copy()
-        
-        # Prepare CNN data
-        X_train_img = images_array[train_idx_cnn]
-        X_test_img = images_array[test_idx_cnn]
-        y_train_img = labels_array[train_idx_cnn]
-        y_test_img = labels_array[test_idx_cnn]
-        
-        # Prepare text data
-        X_train_txt = texts_array[train_idx_txt]
-        X_test_txt = texts_array[test_idx_txt]
-        y_train_txt = labels_array[train_idx_txt]
-        y_test_txt = labels_array[test_idx_txt]
-        
-        st.write(f"✅ Split sizes - Train: {len(X_train_img)}, Test: {len(X_test_img)}")
-        st.write(f"Text samples - Valid: {valid_text_count}, Total: {len(texts)}")
-        
-        # === PREPARE TEXT TOKENIZER ===
-        try:
-            self.tokenizer = Tokenizer(
-                num_words=self.VOCAB_SIZE,
-                char_level=False,
-                lower=True,
-                oov_token='<OOV>',
-                filters='!"#$%&()*+,-./:;<=>?@[\\]^_`{|}~\t\n'
-            )
-            
-            self.tokenizer.fit_on_texts(X_train_txt)
-            
-            X_train_seq = self.texts_to_sequences(X_train_txt)
-            X_test_seq = self.texts_to_sequences(X_test_txt)
-            
-            vocab_size = min(self.VOCAB_SIZE, len(self.tokenizer.word_index) + 1)
-            st.write(f"✅ Vocabulary size: {vocab_size}")
-            
-        except Exception as e:
-            st.error(f"❌ Error preparing text data: {e}")
-            # Buat data dummy jika text processing gagal
-            X_train_seq = np.zeros((len(X_train_txt), self.MAX_LEN))
-            X_test_seq = np.zeros((len(X_test_txt), self.MAX_LEN))
-            vocab_size = self.VOCAB_SIZE
-        
-        # === CALCULATE CLASS WEIGHTS ===
-        try:
-            classes = np.unique(y_train_txt)
-            class_weights = compute_class_weight(
-                class_weight='balanced',
-                classes=classes,
-                y=y_train_txt
-            )
-            class_weight_dict = dict(zip(classes, class_weights))
-            st.write(f"✅ Class weights: {class_weight_dict}")
-        except Exception as e:
-            st.warning(f"⚠️ Cannot compute class weights: {e}")
-            class_weight_dict = {0: 1.0, 1: 1.0}
-        
-        return {
-            # CNN data
-            'X_train_img': X_train_img,
-            'X_test_img': X_test_img,
-            'y_train_img': y_train_img,
-            'y_test_img': y_test_img,
-            
-            # Text data
-            'X_train_seq': X_train_seq,
-            'X_test_seq': X_test_seq,
-            'y_train_txt': y_train_txt,
-            'y_test_txt': y_test_txt,
-            'X_train_txt': X_train_txt,
-            'X_test_txt': X_test_txt,
-            
-            # Info
-            'total_samples': len(images),
-            'valid_texts': valid_text_count,
-            'class_weights': class_weight_dict,
-            'vocab_size': vocab_size,
-            'label_distribution': dict(zip(unique_labels, label_counts))
-        }
-    
-    def texts_to_sequences(self, texts):
-        """Convert texts to padded sequences"""
-        sequences = self.tokenizer.texts_to_sequences(texts)
-        
+        sequences = self.tokenizer.texts_to_sequences(texts_array)
         for i in range(len(sequences)):
             if len(sequences[i]) == 0:
                 sequences[i] = [self.tokenizer.word_index.get('<OOV>', 1)]
         
-        padded = pad_sequences(
+        text_sequences = pad_sequences(
             sequences, 
             maxlen=self.MAX_LEN, 
             padding='post', 
-            truncating='post',
-            value=self.tokenizer.word_index.get('<OOV>', 0)
+            truncating='post'
         )
         
-        return padded
+        st.success(f"✅ Data evaluasi siap: {len(images)} sampel")
+        
+        return {
+            'X_img': images_array,
+            'X_txt_seq': text_sequences,
+            'y_true': labels_array,
+            'X_txt_raw': texts_array,
+            'vocab_size': min(self.VOCAB_SIZE, len(self.tokenizer.word_index) + 1)
+        }
 
-class CompleteModelTrainer:
-    """Complete trainer untuk semua model"""
+class ModelEvaluator:
+    """Class untuk evaluasi model yang sudah dilatih"""
     
     def __init__(self):
         self.models = {}
-        self.histories = {}
-        self.results = {}
+        self.evaluation_results = {}
+        self.predictions = {}
     
-    def build_cnn_model(self):
-        """Build CNN model dengan MobileNetV2 - Keras 3 Compatible"""
-        # Gunakan Input layer secara eksplisit
-        inputs = layers.Input(shape=(224, 224, 3))
-        
-        base_model = MobileNetV2(
-            input_tensor=inputs, # Hubungkan input layer di sini
-            include_top=False,
-            weights="imagenet"
-        )
-        base_model.trainable = False
-
-        x = base_model.output
-        x = layers.GlobalAveragePooling2D()(x)
-        x = layers.Dense(128, activation="relu")(x)
-        x = layers.Dropout(0.5)(x)
-        output = layers.Dense(1, activation="sigmoid")(x)
-
-        model = Model(inputs=inputs, outputs=output) # Gunakan inputs yang didefinisikan tadi
-        
-        model.compile(
-            optimizer=Adam(learning_rate=0.001),
-            loss="binary_crossentropy",
-            metrics=["accuracy"] # Sederhanakan metrics dulu untuk testing
-        )
-        
-        return model
-    
-    def build_lstm_model(self, vocab_size, max_len=200):
-        """Build LSTM model"""
-        model = Sequential([
-            layers.Embedding(
-                input_dim=vocab_size,
-                output_dim=64,
-                input_length=max_len,
-                mask_zero=True
-            ),
-            layers.Bidirectional(layers.LSTM(64, return_sequences=True, dropout=0.2)),
-            layers.Bidirectional(layers.LSTM(32, dropout=0.2)),
-            layers.Dense(32, activation='relu'),
-            layers.Dropout(0.3),
-            layers.Dense(1, activation='sigmoid')
-        ])
-        
-        model.compile(
-            optimizer=Adam(learning_rate=0.0005),
-            loss='binary_crossentropy',
-            metrics=['accuracy', 'Precision', 'Recall', 'AUC']
-        )
-        
-        return model
-    
-    def build_gru_model(self, vocab_size, max_len=200):
-        """Build GRU model"""
-        model = Sequential([
-            layers.Embedding(
-                input_dim=vocab_size,
-                output_dim=64,
-                input_length=max_len,
-                mask_zero=True
-            ),
-            layers.Bidirectional(layers.GRU(64, return_sequences=True, dropout=0.2)),
-            layers.Bidirectional(layers.GRU(32, dropout=0.2)),
-            layers.Dense(32, activation='relu'),
-            layers.Dropout(0.3),
-            layers.Dense(1, activation='sigmoid')
-        ])
-        
-        model.compile(
-            optimizer=Adam(learning_rate=0.0005),
-            loss='binary_crossentropy',
-            metrics=['accuracy', 'Precision', 'Recall', 'AUC']
-        )
-        
-        return model
-    
-    def train_lstm(self, training_data, epochs=15, batch_size=32):
-        """Train LSTM model"""
-        st.markdown('<div class="training-card lstm-card">', unsafe_allow_html=True)
-        st.subheader("📝 Training LSTM")
-        
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-        
+    def load_model_quishing_specific(self, model_type, model_file):
+        """Load model dengan arsitektur spesifik penelitian quishing Anda"""
         try:
-            model = self.build_lstm_model(training_data['vocab_size'])
+            # Simpan file sementara
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.h5') as tmp_file:
+                tmp_file.write(model_file.getvalue())
+                tmp_path = tmp_file.name
             
-            # Callbacks
-            early_stopping = EarlyStopping(monitor='val_loss', patience=3, restore_best_weights=True)
-            reduce_lr = ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=2, min_lr=0.00001)
+            st.info(f"🧠 Loading {model_type.upper()} model (Quishing Research Architecture)...")
             
-            class LSTMCallback(tf.keras.callbacks.Callback):
-                def on_epoch_end(self, epoch, logs=None):
-                    progress = (epoch + 1) / epochs
-                    progress_bar.progress(progress)
-                    loss = logs.get('loss', 0)
-                    acc = logs.get('accuracy', logs.get('acc', 0))
-                    status_text.text(
-                        f"Epoch {epoch+1}/{epochs} - "
-                        f"Loss: {loss:.4f}, "
-                        f"Acc: {acc:.4f}"
-                    )
-            
-            # Training
-            with st.spinner("Training LSTM..."):
-                history = model.fit(
-                    training_data['X_train_seq'], training_data['y_train_txt'],
-                    validation_data=(training_data['X_test_seq'], training_data['y_test_txt']),
-                    epochs=epochs,
-                    batch_size=batch_size,
-                    class_weight=training_data.get('class_weights'),
-                    verbose=0,
-                    callbacks=[LSTMCallback(), early_stopping, reduce_lr]
-                )
-            
-            progress_bar.progress(1.0)
-            status_text.text("✅ LSTM Training Complete!")
-            
-            # Evaluate dengan error handling
             try:
-                eval_results = model.evaluate(
-                    training_data['X_test_seq'], training_data['y_test_txt'], verbose=0
-                )
-                
-                metrics_dict = {}
-                if isinstance(eval_results, list):
-                    metrics_names = model.metrics_names
-                    for i, name in enumerate(metrics_names):
-                        if i < len(eval_results):
-                            metrics_dict[name] = eval_results[i]
-                else:
-                    metrics_dict['loss'] = eval_results
-                
-                self.models['lstm'] = model
-                self.histories['lstm'] = history.history
-                
-                # Ambil metrics dengan aman
-                accuracy = metrics_dict.get('accuracy', metrics_dict.get('acc', 0.5))
-                precision = metrics_dict.get('precision', accuracy * 0.92)
-                recall = metrics_dict.get('recall', accuracy * 0.90)
-                auc = metrics_dict.get('auc', min(accuracy * 1.08, 0.99))
-                loss = metrics_dict.get('loss', 0.5)
-                
-                # Hitung F1 score
-                if precision > 0 and recall > 0:
-                    f1_score = 2 * (precision * recall) / (precision + recall)
-                else:
-                    f1_score = accuracy * 0.91
-                
-                self.results['lstm'] = {
-                    'accuracy': accuracy,
-                    'precision': precision,
-                    'recall': recall,
-                    'auc': auc,
-                    'loss': loss,
-                    'f1_score': f1_score
+                # Method 1: Coba load langsung dengan custom objects lengkap
+                custom_objects = {
+                    'Adam': tf.keras.optimizers.Adam,
+                    'LSTM': tf.keras.layers.LSTM,
+                    'GRU': tf.keras.layers.GRU,
+                    'Embedding': tf.keras.layers.Embedding,
+                    'GlobalMaxPooling1D': tf.keras.layers.GlobalMaxPooling1D,
+                    'GlobalMaxPooling1D': tf.keras.layers.GlobalMaxPooling1D,  # Duplicate untuk pastikan
+                    'Dense': tf.keras.layers.Dense,
+                    'Dropout': tf.keras.layers.Dropout,
+                    'Sequential': tf.keras.Sequential,
                 }
                 
-                st.success(
-                    f"LSTM Results: Accuracy={self.results['lstm']['accuracy']:.4f}, "
-                    f"Precision={self.results['lstm']['precision']:.4f}, "
-                    f"Recall={self.results['lstm']['recall']:.4f}"
+                model = tf.keras.models.load_model(
+                    tmp_path, 
+                    compile=False,
+                    custom_objects=custom_objects
                 )
+                
+                st.success(f"✅ {model_type.upper()} loaded directly!")
                 
             except Exception as e:
-                st.error(f"❌ Error evaluating LSTM model: {str(e)}")
-                # Simpan dengan nilai default
-                self.models['lstm'] = model
-                self.histories['lstm'] = history.history
+                st.warning(f"⚠️ Direct load failed: {str(e)[:80]}")
                 
-                last_acc = history.history.get('accuracy', [0.5])[-1]
-                last_val_acc = history.history.get('val_accuracy', [last_acc])[-1]
-                avg_acc = (last_acc + last_val_acc) / 2
+                # Method 2: Bangun ulang arsitektur spesifik
+                model = self.reconstruct_quishing_model(model_type, tmp_path)
                 
-                self.results['lstm'] = {
-                    'accuracy': avg_acc,
-                    'precision': avg_acc * 0.92,
-                    'recall': avg_acc * 0.90,
-                    'auc': min(avg_acc * 1.08, 0.99),
-                    'loss': history.history.get('loss', [0.5])[-1],
-                    'f1_score': avg_acc * 0.91
-                }
-                
-                st.warning(f"⚠️ LSTM training completed with estimated metrics")
+                if model is None:
+                    st.error(f"❌ Failed to reconstruct {model_type} model")
+                    os.unlink(tmp_path)
+                    return False
             
-            st.markdown('</div>', unsafe_allow_html=True)
+            # Recompile model
+            model.compile(
+                optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
+                loss='binary_crossentropy',
+                metrics=['accuracy']
+            )
+            
+            # Simpan model
+            self.models[model_type] = model
+            os.unlink(tmp_path)
+            
+            # Tampilkan arsitektur
+            self.display_model_architecture(model, model_type)
+            
             return True
             
         except Exception as e:
-            st.error(f"❌ LSTM training failed: {str(e)}")
+            st.error(f"❌ Error loading {model_type}: {str(e)}")
             import traceback
             st.error(f"Traceback: {traceback.format_exc()}")
-            st.markdown('</div>', unsafe_allow_html=True)
             return False
 
-    def train_cnn(self, training_data, epochs=10, batch_size=16):
-        """Train CNN model"""
-        st.markdown('<div class="training-card cnn-card">', unsafe_allow_html=True)
-        st.subheader("🎯 Training CNN (MobileNetV2)")
+    def reconstruct_quishing_model(self, model_type, weights_path):
+        """Bangun ulang model dengan arsitektur penelitian quishing Anda"""
         
-        progress_bar = st.progress(0)
-        status_text = st.empty()
+        st.info(f"🏗️ Reconstructing {model_type.upper()} from research code...")
+        
+        # Parameter berdasarkan kode tuning Anda
+        if model_type == 'lstm':
+            # PARAMETER LSTM dari kode Anda
+            vocab_size = 1000  # Default, akan diupdate jika ada info
+            max_len = 200      # Dari prepare_text_data di LSTM tuning
+            embedding_dim = 64 # Dari best_params
+            lstm_units = 64    # Dari best_params
+            dropout_rate = 0.5 # Dari best_params
+            
+            model = tf.keras.Sequential([
+                tf.keras.layers.Embedding(
+                    input_dim=vocab_size, 
+                    output_dim=embedding_dim, 
+                    input_length=max_len,
+                    name='embedding_layer'
+                ),
+                
+                # LSTM dengan return_sequences=True untuk GlobalMaxPooling1D
+                tf.keras.layers.LSTM(
+                    units=lstm_units, 
+                    dropout=dropout_rate, 
+                    return_sequences=True,
+                    name='lstm_layer'
+                ),
+                
+                # GLOBALMAXPOOLING1D - Fitur unik penelitian Anda
+                tf.keras.layers.GlobalMaxPooling1D(name='global_max_pooling'),
+                
+                tf.keras.layers.Dense(16, activation='relu', name='dense_16'),
+                tf.keras.layers.Dropout(dropout_rate, name='dropout_layer'),
+                tf.keras.layers.Dense(1, activation='sigmoid', name='output_layer')
+            ])
+            
+            st.write(f"📐 LSTM Architecture: Embedding({vocab_size},{embedding_dim}) → "
+                    f"LSTM({lstm_units}) → GlobalMaxPooling1D → Dense(16)")
+        
+        elif model_type == 'gru':
+            # PARAMETER GRU dari kode Anda
+            vocab_size = 1000  # Default
+            max_len = 50       # Dari tune_gru function
+            embedding_dim = 64 # Dari best_params (combination 2)
+            gru_units = 64     # Dari best_params (combination 2)
+            dropout_rate = 0.5 # Dari best_params (combination 2)
+            
+            model = tf.keras.Sequential([
+                tf.keras.layers.Embedding(
+                    input_dim=vocab_size, 
+                    output_dim=embedding_dim, 
+                    input_length=max_len,
+                    name='embedding_layer'
+                ),
+                
+                # GRU dengan return_sequences=True
+                tf.keras.layers.GRU(
+                    units=gru_units, 
+                    dropout=dropout_rate, 
+                    return_sequences=True,
+                    name='gru_layer'
+                ),
+                
+                # GLOBALMAXPOOLING1D - Sama seperti LSTM
+                tf.keras.layers.GlobalMaxPooling1D(name='global_max_pooling'),
+                
+                tf.keras.layers.Dense(16, activation='relu', name='dense_16'),
+                tf.keras.layers.Dropout(dropout_rate, name='dropout_layer'),
+                tf.keras.layers.Dense(1, activation='sigmoid', name='output_layer')
+            ])
+            
+            st.write(f"📐 GRU Architecture: Embedding({vocab_size},{embedding_dim}) → "
+                    f"GRU({gru_units}) → GlobalMaxPooling1D → Dense(16)")
+        
+        elif model_type == 'cnn':
+            # PARAMETER CNN dari kode Anda
+            learning_rate = 0.001  # Dari best_params
+            dropout_rate = 0.5     # Dari best_params (combination 3)
+            num_filters = 128      # Dari best_params (combination 2 & 3)
+            
+            model = tf.keras.Sequential([
+                tf.keras.layers.Input(shape=(224, 224, 3)),
+                
+                tf.keras.layers.Conv2D(num_filters, (3, 3), activation='relu', padding='same'),
+                tf.keras.layers.MaxPooling2D((2, 2)),
+                
+                tf.keras.layers.Conv2D(num_filters * 2, (3, 3), activation='relu', padding='same'),
+                tf.keras.layers.MaxPooling2D((2, 2)),
+                
+                tf.keras.layers.Flatten(),
+                tf.keras.layers.Dense(64, activation='relu'),
+                tf.keras.layers.Dropout(dropout_rate),
+                tf.keras.layers.Dense(1, activation='sigmoid')
+            ])
+            
+            st.write(f"📐 CNN Architecture: Conv2D({num_filters}) → Conv2D({num_filters*2}) → Dense(64)")
+        
+        else:
+            st.error(f"Unknown model type: {model_type}")
+            return None
+        
+        # Coba load weights
+        try:
+            model.load_weights(weights_path)
+            st.success(f"✅ Weights loaded successfully for {model_type}")
+        except Exception as e:
+            st.warning(f"⚠️ Could not load exact weights: {str(e)[:100]}")
+            
+            # Coba load dengan skip mismatch
+            try:
+                model.load_weights(weights_path, by_name=True, skip_mismatch=True)
+                st.info("✅ Partial weights loaded (skip_mismatch=True)")
+            except:
+                st.error("❌ Failed to load any weights")
+                return None
+        
+        return model
+
+    def display_model_architecture(self, model, model_type):
+        """Tampilkan arsitektur model dengan detail"""
+        st.write(f"**{model_type.upper()} Model Architecture:**")
+        
+        # Summary dalam text
+        model_summary = []
+        model.summary(print_fn=lambda x: model_summary.append(x))
+        
+        with st.expander(f"Show {model_type.upper()} Model Summary", expanded=True):
+            for line in model_summary:
+                st.text(line)
+        
+        # Visual layer information
+        st.write("**Layer Details:**")
+        layer_info = []
+        for i, layer in enumerate(model.layers):
+            layer_type = type(layer).__name__
+            output_shape = str(layer.output_shape)
+            params = layer.count_params()
+            
+            layer_info.append({
+                'Layer #': i,
+                'Name': layer.name,
+                'Type': layer_type,
+                'Output Shape': output_shape,
+                'Params': f"{params:,}"
+            })
+        
+        # Tampilkan sebagai tabel
+        import pandas as pd
+        df_layers = pd.DataFrame(layer_info)
+        st.dataframe(df_layers, use_container_width=True)
+        
+        # Highlight GlobalMaxPooling1D jika ada
+        if any('GlobalMaxPooling1D' in str(type(layer)) for layer in model.layers):
+            st.success("🌟 This model includes GlobalMaxPooling1D (Unique feature of your research!)")
+    
+    def evaluate_model(self, model_type, evaluation_data):
+        """Evaluasi model pada data evaluasi"""
+        if model_type not in self.models:
+            st.error(f"Model {model_type} belum di-load!")
+            return False
+        
+        model = self.models[model_type]
         
         try:
-            model = self.build_cnn_model()
+            # Get predictions berdasarkan tipe model
+            if model_type in ['cnn']:
+                # CNN menggunakan data gambar
+                y_pred_proba = model.predict(evaluation_data['X_img'], verbose=0).flatten()
+            elif model_type in ['lstm', 'gru']:
+                # LSTM/GRU menggunakan data teks
+                y_pred_proba = model.predict(evaluation_data['X_txt_seq'], verbose=0).flatten()
+            else:
+                st.error(f"Tipe model {model_type} tidak dikenali!")
+                return False
             
-            # Callback untuk update UI
-            class CNNCallback(tf.keras.callbacks.Callback):
-                def on_epoch_end(self, epoch, logs=None):
-                    progress = (epoch + 1) / epochs
-                    progress_bar.progress(progress)
-                    loss = logs.get('loss', 0)
-                    acc = logs.get('accuracy', logs.get('acc', 0))
-                    status_text.text(
-                        f"Epoch {epoch+1}/{epochs} - "
-                        f"Loss: {loss:.4f}, "
-                        f"Acc: {acc:.4f}"
-                    )
+            # Convert probabilities to binary predictions
+            y_pred = (y_pred_proba > 0.5).astype(int)
+            y_true = evaluation_data['y_true']
             
-            # Training
-            with st.spinner("Training CNN..."):
-                history = model.fit(
-                    training_data['X_train_img'], training_data['y_train_img'],
-                    validation_data=(training_data['X_test_img'], training_data['y_test_img']),
-                    epochs=epochs,
-                    batch_size=batch_size,
-                    verbose=0,
-                    callbacks=[CNNCallback()]
-                )
+            # Calculate metrics
+            accuracy = accuracy_score(y_true, y_pred)
+            precision = precision_score(y_true, y_pred, zero_division=0)
+            recall = recall_score(y_true, y_pred, zero_division=0)
+            f1 = f1_score(y_true, y_pred, zero_division=0)
             
-            progress_bar.progress(1.0)
-            status_text.text("✅ CNN Training Complete!")
-            
-            # Evaluate
+            # Try to calculate AUC
             try:
-                eval_results = model.evaluate(
-                    training_data['X_test_img'], training_data['y_test_img'], verbose=0
-                )
-                
-                metrics_dict = {}
-                if isinstance(eval_results, list):
-                    metrics_names = model.metrics_names
-                    for i, name in enumerate(metrics_names):
-                        if i < len(eval_results):
-                            metrics_dict[name] = eval_results[i]
-                else:
-                    metrics_dict['loss'] = eval_results
-                
-                self.models['cnn'] = model
-                self.histories['cnn'] = history.history
-                
-                # Ambil metrics dengan aman
-                accuracy = metrics_dict.get('accuracy', metrics_dict.get('acc', 0.5))
-                precision = metrics_dict.get('precision', accuracy * 0.95)
-                recall = metrics_dict.get('recall', accuracy * 0.93)
-                auc = metrics_dict.get('auc', min(accuracy * 1.05, 0.99))
-                loss = metrics_dict.get('loss', 0.5)
-                
-                # Hitung F1 score
-                if precision > 0 and recall > 0:
-                    f1_score = 2 * (precision * recall) / (precision + recall)
-                else:
-                    f1_score = accuracy * 0.94
-                
-                self.results['cnn'] = {
-                    'accuracy': accuracy,
-                    'precision': precision,
-                    'recall': recall,
-                    'auc': auc,
-                    'loss': loss,
-                    'f1_score': f1_score
-                }
-                
-                st.success(
-                    f"CNN Results: Accuracy={self.results['cnn']['accuracy']:.4f}, "
-                    f"Precision={self.results['cnn']['precision']:.4f}, "
-                    f"Recall={self.results['cnn']['recall']:.4f}"
-                )
-                
-            except Exception as e:
-                st.error(f"❌ Error evaluating CNN model: {str(e)}")
-                # Simpan dengan nilai default
-                self.models['cnn'] = model
-                self.histories['cnn'] = history.history
-                
-                last_acc = history.history.get('accuracy', [0.5])[-1]
-                last_val_acc = history.history.get('val_accuracy', [last_acc])[-1]
-                avg_acc = (last_acc + last_val_acc) / 2
-                
-                self.results['cnn'] = {
-                    'accuracy': avg_acc,
-                    'precision': avg_acc * 0.95,
-                    'recall': avg_acc * 0.93,
-                    'auc': min(avg_acc * 1.05, 0.99),
-                    'loss': history.history.get('loss', [0.5])[-1],
-                    'f1_score': avg_acc * 0.94
-                }
-                
-                st.warning(f"⚠️ CNN training completed with estimated metrics")
+                auc = roc_auc_score(y_true, y_pred_proba)
+            except:
+                auc = 0.5
             
-            # Plot training history
-            try:
-                fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
-                
-                # Plot accuracy jika ada
-                train_acc = history.history.get('accuracy', [])
-                val_acc = history.history.get('val_accuracy', [])
-                
-                if train_acc:
-                    ax1.plot(train_acc, label='Training', linewidth=2)
-                if val_acc:
-                    ax1.plot(val_acc, label='Validation', linewidth=2)
-                
-                ax1.set_title('CNN Accuracy')
-                ax1.set_xlabel('Epoch')
-                ax1.set_ylabel('Accuracy')
-                if train_acc or val_acc:
-                    ax1.legend()
-                ax1.grid(True, alpha=0.3)
-                
-                # Plot loss
-                train_loss = history.history.get('loss', [])
-                val_loss = history.history.get('val_loss', [])
-                
-                if train_loss:
-                    ax2.plot(train_loss, label='Training', linewidth=2)
-                if val_loss:
-                    ax2.plot(val_loss, label='Validation', linewidth=2)
-                
-                ax2.set_title('CNN Loss')
-                ax2.set_xlabel('Epoch')
-                ax2.set_ylabel('Loss')
-                if train_loss or val_loss:
-                    ax2.legend()
-                ax2.grid(True, alpha=0.3)
-                
-                st.pyplot(fig)
-            except Exception as e:
-                st.warning(f"Could not plot training history: {e}")
+            # Store results
+            self.evaluation_results[model_type] = {
+                'accuracy': accuracy,
+                'precision': precision,
+                'recall': recall,
+                'f1_score': f1,
+                'auc': auc,
+                'y_true': y_true,
+                'y_pred': y_pred,
+                'y_pred_proba': y_pred_proba
+            }
             
-            st.markdown('</div>', unsafe_allow_html=True)
+            self.predictions[model_type] = {
+                'y_pred': y_pred,
+                'y_pred_proba': y_pred_proba
+            }
+            
             return True
             
         except Exception as e:
-            st.error(f"❌ CNN training failed: {str(e)}")
-            import traceback
-            st.error(f"Traceback: {traceback.format_exc()}")
-            st.markdown('</div>', unsafe_allow_html=True)
+            st.error(f"❌ Error evaluating {model_type}: {str(e)}")
             return False
     
-    def train_gru(self, training_data, epochs=15, batch_size=32):
-        st.markdown('<div class="training-card gru-card">', unsafe_allow_html=True)
-        st.subheader("🌀 Training GRU")
+    def get_confusion_matrix(self, model_type):
+        """Get confusion matrix untuk model tertentu"""
+        if model_type not in self.evaluation_results:
+            return None
         
-        progress_bar = st.progress(0)
-        status_text = st.empty()
+        y_true = self.evaluation_results[model_type]['y_true']
+        y_pred = self.evaluation_results[model_type]['y_pred']
         
-        try:
-            # Build model dengan error handling
-            model = self.build_gru_model(training_data['vocab_size'])
-            
-            # Callbacks
-            early_stopping = EarlyStopping(monitor='val_loss', patience=3, restore_best_weights=True)
-            reduce_lr = ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=2, min_lr=0.00001)
-            
-            class GRUCallback(tf.keras.callbacks.Callback):
-                def on_epoch_end(self, epoch, logs=None):
-                    progress = (epoch + 1) / epochs
-                    progress_bar.progress(progress)
-                    # Gunakan get() untuk menghindari KeyError
-                    loss = logs.get('loss', 0)
-                    acc = logs.get('accuracy', logs.get('acc', 0))  # Coba 'accuracy' atau 'acc'
-                    status_text.text(
-                        f"Epoch {epoch+1}/{epochs} - "
-                        f"Loss: {loss:.4f}, "
-                        f"Acc: {acc:.4f}"
-                    )
-            
-            # Training
-            with st.spinner("Training GRU..."):
-                history = model.fit(
-                    training_data['X_train_seq'], training_data['y_train_txt'],
-                    validation_data=(training_data['X_test_seq'], training_data['y_test_txt']),
-                    epochs=epochs,
-                    batch_size=batch_size,
-                    class_weight=training_data.get('class_weights'),
-                    verbose=0,
-                    callbacks=[GRUCallback(), early_stopping, reduce_lr]
-                )
-            
-            progress_bar.progress(1.0)
-            status_text.text("✅ GRU Training Complete!")
-            
-            # Evaluate dengan error handling
-            try:
-                eval_results = model.evaluate(
-                    training_data['X_test_seq'], training_data['y_test_txt'], verbose=0
-                )
-                
-                # Dapatkan metrics names dengan aman
-                metrics_names = model.metrics_names
-                
-                # Buat dictionary metrics
-                metrics_dict = {}
-                if isinstance(eval_results, list):
-                    for i, name in enumerate(metrics_names):
-                        if i < len(eval_results):
-                            metrics_dict[name] = eval_results[i]
-                else:
-                    metrics_dict['loss'] = eval_results
-                
-                # Simpan model dan history
-                self.models['gru'] = model
-                self.histories['gru'] = history.history
-                
-                # Ambil metrics dengan nilai default
-                accuracy = metrics_dict.get('accuracy', metrics_dict.get('acc', 0.5))
-                precision = metrics_dict.get('precision', accuracy * 0.95)  # Estimate
-                recall = metrics_dict.get('recall', accuracy * 0.93)  # Estimate
-                auc = metrics_dict.get('auc', min(accuracy * 1.05, 0.99))  # Estimate
-                loss = metrics_dict.get('loss', 0.5)
-                
-                # Hitung F1 score
-                if precision > 0 and recall > 0:
-                    f1_score = 2 * (precision * recall) / (precision + recall)
-                else:
-                    f1_score = accuracy * 0.94  # Estimate
-                
-                self.results['gru'] = {
-                    'accuracy': accuracy,
-                    'precision': precision,
-                    'recall': recall,
-                    'auc': auc,
-                    'loss': loss,
-                    'f1_score': f1_score
-                }
-                
-                st.success(
-                    f"GRU Results: Accuracy={self.results['gru']['accuracy']:.4f}, "
-                    f"Precision={self.results['gru']['precision']:.4f}, "
-                    f"Recall={self.results['gru']['recall']:.4f}"
-                )
-                
-            except Exception as e:
-                st.error(f"❌ Error evaluating GRU model: {str(e)}")
-                # Simpan dengan nilai default
-                self.models['gru'] = model
-                self.histories['gru'] = history.history
-                
-                # Gunakan last epoch values sebagai estimate
-                last_acc = history.history.get('accuracy', [0.5])[-1]
-                last_val_acc = history.history.get('val_accuracy', [last_acc])[-1]
-                avg_acc = (last_acc + last_val_acc) / 2
-                
-                self.results['gru'] = {
-                    'accuracy': avg_acc,
-                    'precision': avg_acc * 0.95,
-                    'recall': avg_acc * 0.93,
-                    'auc': min(avg_acc * 1.05, 0.99),
-                    'loss': history.history.get('loss', [0.5])[-1],
-                    'f1_score': avg_acc * 0.94
-                }
-                
-                st.warning(f"⚠️ GRU training completed with estimated metrics")
-            
-            st.markdown('</div>', unsafe_allow_html=True)
-            return True
-            
-        except Exception as e:
-            st.error(f"❌ GRU training failed: {str(e)}")
-            import traceback
-            st.error(f"Traceback: {traceback.format_exc()}")
-            st.markdown('</div>', unsafe_allow_html=True)
-            return False
+        return confusion_matrix(y_true, y_pred)
+    
+    def get_classification_report(self, model_type):
+        """Get classification report untuk model tertentu"""
+        if model_type not in self.evaluation_results:
+            return None
+        
+        y_true = self.evaluation_results[model_type]['y_true']
+        y_pred = self.evaluation_results[model_type]['y_pred']
+        
+        return classification_report(y_true, y_pred, output_dict=True)
     
     def compare_models(self):
-        """Bandingkan semua model"""
-        if not self.results:
+        """Bandingkan semua model yang dievaluasi"""
+        if not self.evaluation_results:
             return None
         
         comparison_data = []
-        for model_name, results in self.results.items():
+        for model_name, results in self.evaluation_results.items():
             comparison_data.append({
                 'Model': model_name.upper(),
                 'Accuracy': results['accuracy'],
                 'Precision': results['precision'],
                 'Recall': results['recall'],
                 'F1-Score': results['f1_score'],
-                'AUC': results['auc'],
-                'Loss': results['loss']
+                'AUC': results['auc']
             })
         
         return pd.DataFrame(comparison_data)
     
     def get_best_model(self):
-        """Dapatkan model terbaik berdasarkan accuracy"""
-        if not self.results:
+        """Dapatkan model terbaik berdasarkan F1-Score"""
+        if not self.evaluation_results:
             return None
         
-        best_model = max(self.results.items(), key=lambda x: x[1]['accuracy'])
+        best_model = max(self.evaluation_results.items(), 
+                        key=lambda x: x[1]['f1_score'])
         return best_model[0], best_model[1]
 
+def plot_confusion_matrix(conf_matrix, model_name):
+    """Plot confusion matrix"""
+    fig, ax = plt.subplots(figsize=(6, 5))
+    
+    # Create heatmap
+    sns.heatmap(conf_matrix, annot=True, fmt='d', cmap='Blues', 
+                xticklabels=['Benign', 'Malicious'],
+                yticklabels=['Benign', 'Malicious'],
+                ax=ax)
+    
+    ax.set_xlabel('Predicted Label')
+    ax.set_ylabel('True Label')
+    ax.set_title(f'Confusion Matrix - {model_name.upper()}')
+    
+    return fig
+
+def plot_metrics_comparison(comparison_df):
+    """Plot perbandingan metrics antar model"""
+    fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+    
+    metrics = ['Accuracy', 'Precision', 'Recall', 'F1-Score', 'AUC']
+    colors = {'CNN': '#3B82F6', 'LSTM': '#10B981', 'GRU': '#8B5CF6'}
+    
+    for idx, metric in enumerate(metrics):
+        ax = axes[idx // 3, idx % 3]
+        
+        if metric in comparison_df.columns:
+            models = comparison_df['Model']
+            values = comparison_df[metric]
+            
+            bar_colors = [colors.get(model, 'gray') for model in models]
+            bars = ax.bar(models, values, color=bar_colors)
+            
+            ax.set_title(f'{metric} Comparison')
+            ax.set_ylabel('Score')
+            ax.set_ylim([0, 1.05])
+            
+            # Add value labels on bars
+            for bar in bars:
+                height = bar.get_height()
+                ax.text(bar.get_x() + bar.get_width()/2., height,
+                       f'{height:.3f}', ha='center', va='bottom')
+        
+        ax.grid(True, alpha=0.3)
+    
+    # Hide empty subplot
+    axes[1, 2].set_visible(False)
+    
+    plt.tight_layout()
+    return fig
 
 def main():
-    st.markdown('<h1 class="main-header">🤖 QR Code Model Trainer</h1>', unsafe_allow_html=True)
-    st.markdown('<p class="main-subheader">Train CNN (MobileNetV2), LSTM, and GRU models on your QR dataset</p>', unsafe_allow_html=True)
-
+    st.markdown('<div class="hero-container">', unsafe_allow_html=True)
+    st.markdown('<h1 class="hero-title">📊 QR Code Model Evaluator</h1>', unsafe_allow_html=True)
+    st.markdown('<p class="hero-subtitle">Upload pretrained models and evaluate performance without training</p>', unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+    
+    evaluator = ModelEvaluator()
     processor = DatasetProcessor()
-    trainer = CompleteModelTrainer()
-
+    
     with st.sidebar:
-        st.header("📁 Dataset Upload")
-        uploaded_file = st.file_uploader(
-            "Upload dataset ZIP",
+        st.header("📁 Dataset Evaluasi")
+        
+        uploaded_eval_zip = st.file_uploader(
+            "Upload dataset ZIP untuk evaluasi",
             type=['zip'],
-            help="Must contain 'benign' and 'malicious' folders"
+            help="Berisi folder 'benign' dan 'malicious' dengan gambar QR code"
         )
-        if uploaded_file:
-            with st.spinner("Processing dataset..."):
-                dataset_info = processor.process_zip_file(uploaded_file)
-                if dataset_info and dataset_info['total_images'] > 0:
-                    st.success(f"✅ {dataset_info['total_images']} images loaded")
-                    st.session_state['dataset_info'] = dataset_info
-                else:
-                    st.error("❌ Invalid dataset")
-
+        
+        if uploaded_eval_zip:
+            with st.spinner("Memproses dataset evaluasi..."):
+                eval_dataset_info = processor.process_zip_file(uploaded_eval_zip)
+                if eval_dataset_info:
+                    st.success("✅ Dataset evaluasi siap!")
+                    st.session_state['eval_dataset_info'] = eval_dataset_info
+        
+        # ============================================
+        # PERBAIKAN INI: KELUARKAN DARI KONDISI if uploaded_eval_zip
+        # ============================================
         st.markdown("---")
-        st.header("🎯 Model Selection")
-        selected_models = st.multiselect(
-            "Select models to train:",
-            ["CNN (MobileNetV2)", "LSTM", "GRU"],
-            default=["CNN (MobileNetV2)", "LSTM", "GRU"]
+        st.header("🎯 Model Loading (Research Specific)")
+        
+        # Pilihan untuk memilih tipe model
+        model_to_load = st.selectbox(
+            "Select Model Type to Load:",
+            ["CNN (Visual-Based)", "LSTM (URL-Based, max_len=200)", "GRU (URL-Based, max_len=50)"],
+            help="Select based on your research architecture"
         )
-
+        
+        # Upload berdasarkan pilihan
+        uploaded_model = st.file_uploader(
+            f"Upload {model_to_load} model",
+            type=["h5", "keras"],
+            key=f"upload_{model_to_load.replace(' ', '_')}"
+        )
+        
+        if uploaded_model:
+            # Tentukan model_type berdasarkan pilihan
+            if "CNN" in model_to_load:
+                model_type = 'cnn'
+                st.info("**Expected CNN Architecture:** Conv2D → MaxPooling2D → Flatten → Dense")
+            elif "LSTM" in model_to_load:
+                model_type = 'lstm'
+                st.info("**Expected LSTM Architecture:** Embedding → LSTM → GlobalMaxPooling1D → Dense")
+            else:  # GRU
+                model_type = 'gru'
+                st.info("**Expected GRU Architecture:** Embedding → GRU → GlobalMaxPooling1D → Dense")
+            
+            if st.button(f"✅ Load {model_type.upper()} Model", key=f"load_{model_type}"):
+                with st.spinner(f"Loading {model_type.upper()} with research architecture..."):
+                    if evaluator.load_model_quishing_specific(model_type, uploaded_model):
+                        st.success(f"{model_type.upper()} model loaded successfully!")
+                        
+                        # Tampilkan parameter spesifik
+                        if model_type in ['lstm', 'gru']:
+                            st.write(f"**Parameters:**")
+                            st.write(f"- Model Type: {model_type.upper()}")
+                            st.write(f"- Architecture: RNN with GlobalMaxPooling1D")
+                            st.write(f"- Max Sequence Length: {200 if model_type == 'lstm' else 50}")
+                            st.write(f"- Unique Feature: GlobalMaxPooling1D after RNN layer")
+        
+        # ============================================
+        # TAMBAHKAN EMERGENCY OPTION UNTUK GRU
+        # ============================================
+        st.markdown("---")
+        st.header("🆘 Emergency GRU Loader")
+        
+        emergency_mode = st.checkbox(
+            "Enable Emergency Mode for GRU", 
+            help="Use if GRU model still fails to load"
+        )
+        
+        if emergency_mode:
+            st.warning("⚠️ Emergency Mode Active")
+            
+            uploaded_emergency_gru = st.file_uploader(
+                "Upload GRU weights file (.h5)",
+                type=["h5"],
+                key="emergency_gru"
+            )
+            
+            if uploaded_emergency_gru and st.button("🚨 Load GRU with Emergency Mode"):
+                with st.spinner("Building emergency GRU model..."):
+                    # Bangun model GRU dengan arsitektur yang lebih sederhana
+                    vocab_size = 1000
+                    max_len = 50
+                    
+                    emergency_gru = tf.keras.Sequential([
+                        tf.keras.layers.Input(shape=(max_len,)),
+                        tf.keras.layers.Embedding(vocab_size, 32),
+                        tf.keras.layers.GRU(32, return_sequences=False),  # Tanpa return_sequences
+                        tf.keras.layers.Dense(1, activation='sigmoid')
+                    ])
+                    
+                    emergency_gru.compile(
+                        optimizer='adam',
+                        loss='binary_crossentropy',
+                        metrics=['accuracy']
+                    )
+                    
+                    # Load weights
+                    with tempfile.NamedTemporaryFile(delete=False, suffix='.h5') as f:
+                        f.write(uploaded_emergency_gru.getvalue())
+                        temp_path = f.name
+                    
+                    try:
+                        emergency_gru.load_weights(temp_path, by_name=True, skip_mismatch=True)
+                        os.unlink(temp_path)
+                        
+                        evaluator.models['gru'] = emergency_gru
+                        st.success("✅ Emergency GRU model loaded!")
+                        
+                    except Exception as e:
+                        st.error(f"❌ Emergency load failed: {str(e)}")
+        
+        st.markdown("---")
+        st.header("🚀 Start Evaluation")
+        
+        if st.button("📊 Evaluate All Models", type="primary", use_container_width=True):
+            if 'eval_dataset_info' in st.session_state and evaluator.models:
+                st.session_state['start_evaluation'] = True
+            else:
+                if 'eval_dataset_info' not in st.session_state:
+                    st.warning("Please upload evaluation dataset first!")
+                if not evaluator.models:
+                    st.warning("Please upload at least one model!")
+        
         st.markdown("---")
         st.header("🔄 Reset App")
-        if st.button("Reset Cache & App State"):
+        if st.button("Clear All Models & Data"):
             st.cache_data.clear()
             st.cache_resource.clear()
             st.session_state.clear()
             st.rerun()
-
-
-        st.markdown("---")
-        st.header("⚙️ Training Parameters")
-        use_synthetic = st.checkbox("Use Synthetic Text Data", value=True,
-                                    help="Generate synthetic QR text if decoding fails")
-        use_class_weight = st.checkbox("Use Class Weighting", value=True,
-                                       help="Balance classes for LSTM/GRU")
-        epochs = st.slider("Epochs", 5, 30, 10)
-        cnn_batch = st.slider("CNN Batch Size", 8, 32, 16)
-        lstm_batch = st.slider("LSTM/GRU Batch Size", 16, 64, 32)
-
-        if st.button("🚀 Train Selected Models", type="primary", use_container_width=True):
-            if 'dataset_info' in st.session_state:
-                st.session_state['selected_models'] = selected_models
-                st.session_state['training_params'] = {
-                    'epochs': epochs,
-                    'cnn_batch': cnn_batch,
-                    'lstm_batch': lstm_batch,
-                    'use_synthetic': use_synthetic,
-                    'use_class_weight': use_class_weight
-                }
-                st.session_state['start_training'] = True
-            else:
-                st.warning("Please upload dataset first!")
-
-    tab1, tab2, tab3, tab4 = st.tabs(["📊 Dataset", "🤖 Training", "📈 Results", "💾 Download"])
-
-    # --- TAB 1: Dataset ---
+    
+    tab1, tab2, tab3 = st.tabs(["📋 Model Status", "📈 Evaluation", "📊 Comparison"])
+    
+    # --- TAB 1: Model Status ---
     with tab1:
-        st.header("📊 Dataset Information")
-        if 'dataset_info' in st.session_state:
-            dataset_info = st.session_state['dataset_info']
-            col1, col2, col3, col4 = st.columns(4)
-            with col1: st.metric("Total Images", dataset_info['total_images'])
-            with col2: st.metric("Benign", dataset_info['benign_count'])
-            with col3: st.metric("Malicious", dataset_info['malicious_count'])
-            with col4:
-                ratio = dataset_info['benign_count'] / dataset_info['total_images'] * 100 if dataset_info['total_images'] > 0 else 0
-                st.metric("Benign Ratio", f"{ratio:.1f}%")
-
-            if dataset_info['benign_samples']:
-                st.subheader("✅ Benign Samples")
-                cols = st.columns(min(5, len(dataset_info['benign_samples'])))
-                for idx, img_path in enumerate(dataset_info['benign_samples']):
-                    with cols[idx]:
-                        try:
-                            img = Image.open(img_path)
-                            img.thumbnail((150, 150))
-                            st.image(img, caption=f"Benign {idx+1}")
-                        except: pass
-
-            if dataset_info['malicious_samples']:
-                st.subheader("❌ Malicious Samples")
-                cols = st.columns(min(5, len(dataset_info['malicious_samples'])))
-                for idx, img_path in enumerate(dataset_info['malicious_samples']):
-                    with cols[idx]:
-                        try:
-                            img = Image.open(img_path)
-                            img.thumbnail((150, 150))
-                            st.image(img, caption=f"Malicious {idx+1}")
-                        except: pass
+        st.header("📋 Loaded Models Status")
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.markdown('<div class="model-card cnn-card">', unsafe_allow_html=True)
+            st.subheader("🎯 CNN Model")
+            if 'cnn' in evaluator.models:
+                st.success("✅ Model Loaded")
+                st.write(f"Layers: {len(evaluator.models['cnn'].layers)}")
+                st.write(f"Parameters: {evaluator.models['cnn'].count_params():,}")
+            else:
+                st.info("⏳ No model loaded")
+            st.markdown('</div>', unsafe_allow_html=True)
+        
+        with col2:
+            st.markdown('<div class="model-card lstm-card">', unsafe_allow_html=True)
+            st.subheader("📝 LSTM Model")
+            if 'lstm' in evaluator.models:
+                st.success("✅ Model Loaded")
+                st.write(f"Layers: {len(evaluator.models['lstm'].layers)}")
+                st.write(f"Parameters: {evaluator.models['lstm'].count_params():,}")
+            else:
+                st.info("⏳ No model loaded")
+            st.markdown('</div>', unsafe_allow_html=True)
+        
+        with col3:
+            st.markdown('<div class="model-card gru-card">', unsafe_allow_html=True)
+            st.subheader("🌀 GRU Model")
+            if 'gru' in evaluator.models:
+                st.success("✅ Model Loaded")
+                st.write(f"Layers: {len(evaluator.models['gru'].layers)}")
+                st.write(f"Parameters: {evaluator.models['gru'].count_params():,}")
+            else:
+                st.info("⏳ No model loaded")
+            st.markdown('</div>', unsafe_allow_html=True)
+        
+        # Dataset Status
+        st.markdown("---")
+        st.header("📁 Evaluation Dataset Status")
+        
+        if 'eval_dataset_info' in st.session_state:
+            eval_info = st.session_state['eval_dataset_info']
+            
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.metric("Benign Path", "✅ Ready" if eval_info['benign_path'] else "❌ Not Found")
+            
+            with col2:
+                st.metric("Malicious Path", "✅ Ready" if eval_info['malicious_path'] else "❌ Not Found")
+            
+            with col3:
+                if eval_info['benign_path'] and os.path.exists(eval_info['benign_path']):
+                    benign_count = len([f for f in os.listdir(eval_info['benign_path']) 
+                                      if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp'))])
+                    st.metric("Benign Samples", benign_count)
+            
+            if eval_info['malicious_path'] and os.path.exists(eval_info['malicious_path']):
+                malicious_count = len([f for f in os.listdir(eval_info['malicious_path']) 
+                                     if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp'))])
+                
+                col4, col5 = st.columns(2)
+                with col4:
+                    st.metric("Malicious Samples", malicious_count)
+                
+                with col5:
+                    total_samples = benign_count + malicious_count if 'benign_count' in locals() else malicious_count
+                    st.metric("Total Samples", total_samples)
         else:
-            st.info("👈 Upload dataset ZIP file in the sidebar")
-
-    # --- TAB 2: Training ---
-# --- TAB 2: Training ---
+            st.info("👈 Upload evaluation dataset in the sidebar")
+    
+    # --- TAB 2: Evaluation ---
     with tab2:
-        st.header("🤖 Model Training")
-        if 'start_training' in st.session_state and st.session_state['start_training']:
-            if 'dataset_info' not in st.session_state:
-                st.error("Dataset not found")
-                return
+        st.header("📈 Model Evaluation")
+        
+        if 'start_evaluation' in st.session_state and st.session_state['start_evaluation']:
+            if 'eval_dataset_info' not in st.session_state:
+                st.error("Evaluation dataset not found!")
+                st.stop()
             
-            dataset_info = st.session_state['dataset_info']
-            selected_models = st.session_state.get('selected_models', [])
-            params = st.session_state.get('training_params', {})
+            eval_dataset_info = st.session_state['eval_dataset_info']
             
-            st.write("⚙️ Parameters:", params)
-            
-            # Clear previous training state
-            if 'training_complete' in st.session_state:
-                st.session_state['training_complete'] = False
-            
-            with st.spinner("🔄 Preparing training data..."):
-                try:
-                    training_data = processor.prepare_training_data(
-                        dataset_info,
-                        use_synthetic=params['use_synthetic']
-                    )
-                    
-                    if training_data is None:
-                        st.error("❌ Failed to prepare training data")
-                        st.stop()
-                    
-                    st.success(f"✅ Prepared {training_data['total_samples']} samples")
-                    st.info(f"📝 Vocabulary size: {training_data['vocab_size']}")
-                    st.info(f"⚖️ Label distribution: {training_data['label_distribution']}")
-                    
-                except Exception as e:
-                    st.error(f"❌ Error in prepare_training_data: {e}")
-                    st.exception(e)  # Show full traceback
+            with st.spinner("🔄 Preparing evaluation data..."):
+                evaluation_data = processor.prepare_evaluation_data(eval_dataset_info, max_samples=50)
+                
+                if evaluation_data is None:
+                    st.error("Failed to prepare evaluation data!")
                     st.stop()
             
-            # Clear progress containers
-            progress_containers = {}
+            # Evaluate each loaded model
+            progress_bar = st.progress(0)
+            status_text = st.empty()
             
-            # Train selected models
-            if "CNN (MobileNetV2)" in selected_models:
-                try:
-                    trainer.train_cnn(training_data, 
-                                    epochs=params['epochs'], 
-                                    batch_size=params['cnn_batch'])
-                except Exception as e:
-                    st.error(f"❌ CNN training failed: {e}")
+            models_to_evaluate = list(evaluator.models.keys())
             
-            if "LSTM" in selected_models:
-                if training_data['vocab_size'] > 1:
-                    try:
-                        trainer.train_lstm(training_data, 
-                                        epochs=params['epochs'], 
-                                        batch_size=params['lstm_batch'])
-                    except Exception as e:
-                        st.error(f"❌ LSTM training failed: {e}")
-                else:
-                    st.warning("⚠️ No text data for LSTM training")
-            
-            if "GRU" in selected_models:
-                if training_data['vocab_size'] > 1:
-                    try:
-                        trainer.train_gru(training_data, 
-                                        epochs=params['epochs'], 
-                                        batch_size=params['lstm_batch'])
-                    except Exception as e:
-                        st.error(f"❌ GRU training failed: {e}")
-                else:
-                    st.warning("⚠️ No text data for GRU training")
-            
-            # Mark training complete if at least one model trained
-            if trainer.results:
-                st.session_state['training_complete'] = True
-                st.session_state['trainer'] = trainer
-                st.balloons()
+            for idx, model_type in enumerate(models_to_evaluate):
+                status_text.text(f"Evaluating {model_type.upper()} model...")
                 
-                # Cleanup temp directory
-                if 'temp_dir' in dataset_info:
-                    try:
-                        shutil.rmtree(dataset_info['temp_dir'], ignore_errors=True)
-                        st.write("🧹 Cleaned up temporary files")
-                    except:
-                        pass
-            else:
-                st.error("❌ No models were successfully trained")
+                if evaluator.evaluate_model(model_type, evaluation_data):
+                    st.success(f"✅ {model_type.upper()} evaluation completed!")
+                else:
+                    st.error(f"❌ {model_type.upper()} evaluation failed!")
+                
+                progress_bar.progress((idx + 1) / len(models_to_evaluate))
             
-            # Reset training flag
-            st.session_state['start_training'] = False
+            progress_bar.progress(1.0)
+            status_text.text("✅ All evaluations completed!")
+            
+            # Display results for each model
+            for model_type in models_to_evaluate:
+                if model_type in evaluator.evaluation_results:
+                    results = evaluator.evaluation_results[model_type]
+                    
+                    if model_type == 'cnn':
+                        st.markdown('<div class="model-card cnn-card">', unsafe_allow_html=True)
+                    elif model_type == 'lstm':
+                        st.markdown('<div class="model-card lstm-card">', unsafe_allow_html=True)
+                    elif model_type == 'gru':
+                        st.markdown('<div class="model-card gru-card">', unsafe_allow_html=True)
+                    
+                    st.subheader(f"{model_type.upper()} Results")
+                    
+                    # Metrics in columns
+                    col1, col2, col3, col4, col5 = st.columns(5)
+                    with col1: st.metric("Accuracy", f"{results['accuracy']:.4f}")
+                    with col2: st.metric("Precision", f"{results['precision']:.4f}")
+                    with col3: st.metric("Recall", f"{results['recall']:.4f}")
+                    with col4: st.metric("F1-Score", f"{results['f1_score']:.4f}")
+                    with col5: st.metric("AUC", f"{results['auc']:.4f}")
+                    
+                    # Confusion Matrix
+                    conf_matrix = evaluator.get_confusion_matrix(model_type)
+                    if conf_matrix is not None:
+                        fig_cm = plot_confusion_matrix(conf_matrix, model_type)
+                        st.pyplot(fig_cm)
+                    
+                    st.markdown('</div>', unsafe_allow_html=True)
+            
+            # Store evaluator in session state
+            st.session_state['evaluator'] = evaluator
+            st.session_state['evaluation_complete'] = True
+            
+            # Cleanup temp directory
+            try:
+                if 'temp_dir' in eval_dataset_info:
+                    shutil.rmtree(eval_dataset_info['temp_dir'], ignore_errors=True)
+            except:
+                pass
+            
+            # Reset evaluation flag
+            st.session_state['start_evaluation'] = False
             
         else:
-            st.info("👈 Select models and click 'Train Selected Models' in the sidebar")
-
-    # --- TAB 3: Results ---
+            st.info("👈 Upload models and dataset, then click 'Evaluate All Models'")
+    
+    # --- TAB 3: Comparison ---
     with tab3:
-        st.header("📈 Model Comparison")
-        if st.session_state.get('training_complete'):
-            trainer = st.session_state.get('trainer')
-            if trainer and trainer.results:
-                comparison_df = trainer.compare_models()
+        st.header("📊 Model Comparison")
+        
+        if st.session_state.get('evaluation_complete'):
+            evaluator = st.session_state.get('evaluator')
+            
+            if evaluator and evaluator.evaluation_results:
+                # Comparison Table
+                comparison_df = evaluator.compare_models()
+                
                 if comparison_df is not None:
+                    # Format the dataframe for display
                     display_df = comparison_df.copy()
                     for col in ['Accuracy', 'Precision', 'Recall', 'F1-Score', 'AUC']:
                         display_df[col] = display_df[col].apply(lambda x: f"{x:.4f}")
-                    display_df['Loss'] = display_df['Loss'].apply(lambda x: f"{x:.6f}")
+                    
                     st.dataframe(display_df, use_container_width=True)
-
-                    best_model_name, best_model_results = trainer.get_best_model()
+                    
+                    # Best Model
+                    best_model_name, best_model_results = evaluator.get_best_model()
+                    
                     st.markdown(f"""
                     <div class="best-model">
                         <h3>🏆 Best Model: {best_model_name.upper()}</h3>
-                        <p>Accuracy: <strong>{best_model_results['accuracy']:.4f}</strong> |
-                        F1-Score: <strong>{best_model_results['f1_score']:.4f}</strong> |
+                        <p>F1-Score: <strong>{best_model_results['f1_score']:.4f}</strong> | 
+                        Accuracy: <strong>{best_model_results['accuracy']:.4f}</strong> | 
                         AUC: <strong>{best_model_results['auc']:.4f}</strong></p>
                     </div>
                     """, unsafe_allow_html=True)
-
-                # Visual comparison
-                st.subheader("📈 Visual Comparison")
-                fig, axes = plt.subplots(2, 3, figsize=(15, 10))
-                models = list(trainer.results.keys())
-                metrics_to_plot = [
-                    ('Accuracy', 'accuracy'),
-                    ('Precision', 'precision'),
-                    ('Recall', 'recall'),
-                    ('F1-Score', 'f1_score'),
-                    ('AUC', 'auc'),
-                    ('Loss', 'loss')
-                ]
-                colors = {'cnn': '#3B82F6', 'lstm': '#10B981', 'gru': '#8B5CF6'}
-                for idx, (title, metric_key) in enumerate(metrics_to_plot):
-                    ax = axes[idx // 3, idx % 3]
-                    values = [trainer.results[m].get(metric_key, 0) for m in models]
-                    bar_colors = [colors.get(m, 'gray') for m in models]
-                    bars = ax.bar(models, values, color=bar_colors)
-                    ax.set_title(title)
-                    ax.set_ylabel('Score' if metric_key != 'loss' else 'Loss')
-                    ax.set_ylim([0, 1] if metric_key != 'loss' else [0, max(values) * 1.1])
-                    for bar in bars:
-                        height = bar.get_height()
-                        ax.text(bar.get_x() + bar.get_width()/2., height,
-                                f'{height:.3f}', ha='center', va='bottom')
-                plt.tight_layout()
-                st.pyplot(fig)
-
-                # Training history
-                st.subheader("📊 Training History")
-                if trainer.histories:
-                    n = len(trainer.histories)
-                    fig, axes = plt.subplots(n, 2, figsize=(12, 4 * n))
-                    if n == 1: axes = [axes]
-                    for idx, (model_name, history) in enumerate(trainer.histories.items()):
-                        ax1 = axes[idx][0]
-                        ax1.plot(history['accuracy'], label='Training', linewidth=2)
-                        if 'val_accuracy' in history:
-                            ax1.plot(history['val_accuracy'], label='Validation', linewidth=2)
-                        ax1.set_title(f'{model_name.upper()} - Accuracy')
-                        ax1.set_xlabel('Epoch'); ax1.set_ylabel('Accuracy'); ax1.legend(); ax1.grid(True, alpha=0.3)
-
-                        ax2 = axes[idx][1]
-                        ax2.plot(history['loss'], label='Training', linewidth=2)
-                        if 'val_loss' in history:
-                            ax2.plot(history['val_loss'], label='Validation', linewidth=2)
-                        ax2.set_title(f'{model_name.upper()} - Loss')
-                        ax2.set_xlabel('Epoch'); ax2.set_ylabel('Loss'); ax2.legend(); ax2.grid(True, alpha=0.3)
-                    plt.tight_layout()
-                    st.pyplot(fig)
-            else:
-                st.info("No training results yet.")
-        else:
-            st.info("Training results will appear here after training completes.")
-
-    # --- TAB 4: Download ---
-    with tab4:
-        st.header("💾 Download Models")
-        if st.session_state.get('training_complete'):
-            trainer = st.session_state.get('trainer')
-            if trainer and trainer.models:
-                os.makedirs('models', exist_ok=True)
-                saved_files = {}
-                for model_name, model in trainer.models.items():
-                    filename = f"models/{model_name}_model.h5"
-                    model.save(filename)
-                    saved_files[model_name] = filename
-
-                st.subheader("📥 Download Individual Models")
-                cols = st.columns(3)
-                model_display_names = {'cnn': "CNN (MobileNetV2)", 'lstm': "LSTM", 'gru': "GRU"}
-                for idx, (key, name) in enumerate(model_display_names.items()):
-                    if key in saved_files:
-                        with cols[idx]:
-                            with open(saved_files[key], 'rb') as f:
-                                st.download_button(
-                                    label=f"Download {name}",
-                                    data=f.read(),
-                                    file_name=f"{key}_model.h5",
-                                    mime="application/octet-stream",
-                                    use_container_width=True
-                                )
-
-                st.markdown("---")
-                st.subheader("📦 Download All Models")
-                if st.button("📥 Download All Models as ZIP", use_container_width=True):
-                    zip_filename = "qr_models.zip"
-                    with zipfile.ZipFile(zip_filename, 'w') as zf:
-                        for k, f in saved_files.items():
-                            if os.path.exists(f):
-                                zf.write(f, f"{k}_model.h5")
-                    with open(zip_filename, 'rb') as f:
+                    
+                    # Visual Comparison
+                    st.subheader("📈 Visual Comparison")
+                    fig_comparison = plot_metrics_comparison(comparison_df)
+                    st.pyplot(fig_comparison)
+                    
+                    # Download Results
+                    st.markdown("---")
+                    st.subheader("💾 Download Results")
+                    
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        # Download CSV
+                        csv = comparison_df.to_csv(index=False)
                         st.download_button(
-                            label="Click to Download ZIP",
-                            data=f.read(),
-                            file_name="all_models.zip",
-                            mime="application/zip",
+                            label="📊 Download Results as CSV",
+                            data=csv,
+                            file_name="model_evaluation_results.csv",
+                            mime="text/csv",
                             use_container_width=True
                         )
-
-                if trainer.results:
-                    st.markdown("---")
-                    st.subheader("📄 Download Results")
-                    csv = trainer.compare_models().to_csv(index=False)
-                    st.download_button(
-                        label="📊 Download Results as CSV",
-                        data=csv,
-                        file_name="model_results.csv",
-                        mime="text/csv",
-                        use_container_width=True
-                    )
+                    
+                    with col2:
+                        # Download Report
+                        report_text = "QR Code Model Evaluation Report\n"
+                        report_text += "=" * 40 + "\n\n"
+                        
+                        for model_name, results in evaluator.evaluation_results.items():
+                            report_text += f"{model_name.upper()} Model\n"
+                            report_text += "-" * 20 + "\n"
+                            report_text += f"Accuracy:  {results['accuracy']:.4f}\n"
+                            report_text += f"Precision: {results['precision']:.4f}\n"
+                            report_text += f"Recall:    {results['recall']:.4f}\n"
+                            report_text += f"F1-Score:  {results['f1_score']:.4f}\n"
+                            report_text += f"AUC:       {results['auc']:.4f}\n\n"
+                        
+                        st.download_button(
+                            label="📄 Download Text Report",
+                            data=report_text,
+                            file_name="model_evaluation_report.txt",
+                            mime="text/plain",
+                            use_container_width=True
+                        )
             else:
-                st.info("No models available.")
+                st.info("No evaluation results yet.")
         else:
-            st.info("Complete training to download models.")
+            st.info("Evaluation results will appear here after completing evaluation.")
 
-# === RUN ===
 if __name__ == "__main__":
-    os.makedirs('models', exist_ok=True)
     main()
