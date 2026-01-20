@@ -36,6 +36,7 @@ from tensorflow.keras.preprocessing.sequence import pad_sequences
 from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
 from sklearn.model_selection import train_test_split
 from sklearn.utils.class_weight import compute_class_weight
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 try:
     from pyzbar.pyzbar import decode
     QR_DECODER_AVAILABLE = True
@@ -639,8 +640,7 @@ class CompleteModelTrainer:
                     {cnn_eval['precision']:.4f}
                 </div>
             </div>
-            """, unsafe_allow_html=True)
-        
+            """, unsafe_allow_html=True)        
         with col3:
             st.markdown(f"""
             <div class="metric-card">
@@ -715,10 +715,11 @@ class CompleteModelTrainer:
             layers.Dense(1, activation='sigmoid')
         ])
         
+        # Gunakan metrics yang benar untuk TensorFlow
         model.compile(
             optimizer=Adam(learning_rate=0.0005),
             loss='binary_crossentropy',
-            metrics=['accuracy', 'Precision', 'Recall']  # REMOVED AUC
+            metrics=['accuracy']  # Hanya accuracy, lainnya dihitung manual
         )
         
         return model
@@ -739,10 +740,11 @@ class CompleteModelTrainer:
             layers.Dense(1, activation='sigmoid')
         ])
         
+        # Gunakan metrics yang benar untuk TensorFlow
         model.compile(
             optimizer=Adam(learning_rate=0.0005),
             loss='binary_crossentropy',
-            metrics=['accuracy', 'Precision', 'Recall']  # REMOVED AUC
+            metrics=['accuracy']  # Hanya accuracy, lainnya dihitung manual
         )
         
         return model
@@ -791,24 +793,24 @@ class CompleteModelTrainer:
         progress_bar.progress(1.0)
         status_text.text("✅ LSTM Training Complete!")
         
-        # Evaluate
-        eval_results = model.evaluate(
-            training_data['X_test_seq'], training_data['y_test_txt'], verbose=0
-        )
+        # Evaluate dengan sklearn (lebih reliable)
+        y_pred_prob = model.predict(training_data['X_test_seq'], verbose=0)
+        y_pred = (y_pred_prob > 0.5).astype(int).flatten()
+        y_true = training_data['y_test_txt']
         
-        metrics_dict = dict(zip(model.metrics_names, eval_results))
+        # Hitung metrics manual
+        accuracy = accuracy_score(y_true, y_pred)
+        precision = precision_score(y_true, y_pred, zero_division=0)
+        recall = recall_score(y_true, y_pred, zero_division=0)
+        f1 = f1_score(y_true, y_pred, zero_division=0)
         
         self.models['lstm'] = model
         self.histories['lstm'] = history.history
         
-        # Calculate F1-score
-        f1 = 2 * (metrics_dict['precision'] * metrics_dict['recall']) / \
-             (metrics_dict['precision'] + metrics_dict['recall'] + 1e-7)
-        
         self.results['lstm'] = {
-            'accuracy': metrics_dict['accuracy'],
-            'precision': metrics_dict['precision'],
-            'recall': metrics_dict['recall'],
+            'accuracy': accuracy,
+            'precision': precision,
+            'recall': recall,
             'f1_score': f1
         }
         
@@ -890,24 +892,24 @@ class CompleteModelTrainer:
         progress_bar.progress(1.0)
         status_text.text("✅ GRU Training Complete!")
         
-        # Evaluate
-        eval_results = model.evaluate(
-            training_data['X_test_seq'], training_data['y_test_txt'], verbose=0
-        )
+        # Evaluate dengan sklearn (lebih reliable)
+        y_pred_prob = model.predict(training_data['X_test_seq'], verbose=0)
+        y_pred = (y_pred_prob > 0.5).astype(int).flatten()
+        y_true = training_data['y_test_txt']
         
-        metrics_dict = dict(zip(model.metrics_names, eval_results))
+        # Hitung metrics manual
+        accuracy = accuracy_score(y_true, y_pred)
+        precision = precision_score(y_true, y_pred, zero_division=0)
+        recall = recall_score(y_true, y_pred, zero_division=0)
+        f1 = f1_score(y_true, y_pred, zero_division=0)
         
         self.models['gru'] = model
         self.histories['gru'] = history.history
         
-        # Calculate F1-score
-        f1 = 2 * (metrics_dict['precision'] * metrics_dict['recall']) / \
-             (metrics_dict['precision'] + metrics_dict['recall'] + 1e-7)
-        
         self.results['gru'] = {
-            'accuracy': metrics_dict['accuracy'],
-            'precision': metrics_dict['precision'],
-            'recall': metrics_dict['recall'],
+            'accuracy': accuracy,
+            'precision': precision,
+            'recall': recall,
             'f1_score': f1
         }
         
@@ -1056,6 +1058,10 @@ def main():
                 else:
                     st.error("❌ Invalid dataset")
         
+        st.markdown("---")
+        st.header("🎯 Model Configuration")
+        
+        st.markdown('<div class="upload-section">', unsafe_allow_html=True)
         st.subheader("📊 CNN Offline Results")
         
         cnn_eval_file = st.file_uploader(
