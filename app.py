@@ -19,8 +19,8 @@ warnings.filterwarnings('ignore')
 
 # === PAGE CONFIG ===
 st.set_page_config(
-    page_title="QR Code Dataset & Model Results",
-    page_icon="📊",
+    page_title="Evaluating CNN LSTM and GRU for Malicious QR Code Identification",
+    page_icon="🤖",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -935,9 +935,6 @@ def main():
     st.markdown("""
     <div class="hero-container">
         <h1 class="hero-title">🤖 QR Code Dataset & Model Results</h1>
-        <p class="hero-subtitle">
-            Preview dataset + View model results without training
-        </p>
     </div>
     """, unsafe_allow_html=True)
     
