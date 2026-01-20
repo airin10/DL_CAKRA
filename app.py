@@ -366,9 +366,7 @@ class DatasetPreview:
         if not dataset_info:
             return
         
-        st.markdown('<div class="info-box">', unsafe_allow_html=True)
         st.write("**ℹ️ Dataset Preview Only** - Dataset tidak digunakan untuk training, hanya untuk preview.")
-        st.markdown('</div>', unsafe_allow_html=True)
         
         # Dataset metrics card
         st.markdown('<div class="dataset-card">', unsafe_allow_html=True)
@@ -506,7 +504,7 @@ class DatasetPreview:
             
             # Show more samples in expander
             if len(dataset_info['benign_samples']) > 5:
-                with st.expander(f"👁️ Show all {len(dataset_info['benign_samples'])} benign samples"):
+                with st.expander(f"Show more benign samples"):
                     # Calculate grid layout
                     num_cols = 5
                     num_rows = (len(dataset_info['benign_samples']) + num_cols - 1) // num_cols
@@ -550,7 +548,7 @@ class DatasetPreview:
             
             # Show more samples in expander
             if len(dataset_info['malicious_samples']) > 5:
-                with st.expander(f"👁️ Show all {len(dataset_info['malicious_samples'])} malicious samples"):
+                with st.expander(f"Show more malicious samples"):
                     # Calculate grid layout
                     num_cols = 5
                     num_rows = (len(dataset_info['malicious_samples']) + num_cols - 1) // num_cols
@@ -591,6 +589,8 @@ class DatasetPreview:
                 st.write("- Tambahkan gambar untuk kelas yang kosong")
             if dataset_info['total_images'] > 0 and abs(dataset_info['benign_count'] - dataset_info['malicious_count']) / dataset_info['total_images'] > 0.5:
                 st.write("- Seimbangkan distribusi kelas")
+            else : 
+                st.write("Dataset sudah sangat baik!")
 
 class ModelResultsAnalyzer:
     """Class untuk analisis dan visualisasi hasil model"""
@@ -934,7 +934,7 @@ class ModelResultsAnalyzer:
 def main():
     st.markdown("""
     <div class="hero-container">
-        <h1 class="hero-title">📊 QR Code Dataset & Model Results</h1>
+        <h1 class="hero-title">🤖 QR Code Dataset & Model Results</h1>
         <p class="hero-subtitle">
             Preview dataset + View model results without training
         </p>
@@ -950,9 +950,7 @@ def main():
         # Tab untuk upload
         tab_upload, tab_info = st.tabs(["📁 Upload", "ℹ️ Info"])
         
-        with tab_upload:
-            st.markdown('<div class="upload-section">', unsafe_allow_html=True)
-            
+        with tab_upload:           
             # Upload Dataset
             st.subheader("📂 Dataset ZIP")
             uploaded_dataset = st.file_uploader(
@@ -965,7 +963,7 @@ def main():
             st.markdown("---")
             
             # Upload Model Results
-            st.subheader("🤖 Model Results")
+            st.subheader("🤖  Model Results")
             
             st.markdown("🖼️ **CNN Results**")
             cnn_eval = st.file_uploader(
@@ -1110,11 +1108,6 @@ def main():
         
         if 'dataset_info' in st.session_state:
             dataset_info = st.session_state['dataset_info']
-            
-            st.markdown('<div class="info-box">', unsafe_allow_html=True)
-            st.write("**ℹ️ Dataset Preview Only** - Dataset tidak digunakan untuk training, hanya untuk preview.")
-            st.markdown('</div>', unsafe_allow_html=True)
-            
             dataset_preview.display_dataset_info(dataset_info)
             
             # Cleanup button
@@ -1150,9 +1143,7 @@ def main():
             analyzer = st.session_state['analyzer']
             
             # Display loaded models
-            st.markdown('<div class="info-box">', unsafe_allow_html=True)
             st.write(f"**ℹ️ Loaded Models:** {', '.join([m.upper() for m in analyzer.model_results.keys()])}")
-            st.markdown('</div>', unsafe_allow_html=True)
             
             # Display each model's results
             if 'cnn' in analyzer.model_results:
@@ -1285,9 +1276,7 @@ def main():
                     st.markdown("### 💡 Recommendations")
                     
                     if best_f1 >= 0.9:
-                        st.markdown('<div class="success-box">', unsafe_allow_html=True)
                         st.write("✅ **Excellent performance!** Model sudah sangat baik.")
-                        st.markdown('</div>', unsafe_allow_html=True)
                     elif best_f1 >= 0.8:
                         st.markdown('<div class="info-box">', unsafe_allow_html=True)
                         st.write("ℹ️ **Good performance.** Consider fine-tuning for better results.")
