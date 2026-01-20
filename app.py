@@ -1,7 +1,12 @@
 """
-QR Code Security Analyzer - DATASET PREVIEW + MODEL RESULTS
-[Upload dataset untuk preview + Upload model results untuk analisis, NO TRAINING]
+Kelompok - Cakra 
+Anggota :
+Wilson Tovano - 221113421
+Karina Desi Liady - 221111905
+Vincent Stanley - 221110003
+IF-A Sore
 """
+
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -241,7 +246,6 @@ body, .stApp, [class*="css"] {
 
 class DatasetPreview:
     """Class untuk preview dataset saja (tidak untuk training)"""
-    
     def __init__(self):
         self.dataset_info = {}
     
@@ -266,7 +270,6 @@ class DatasetPreview:
                 idx = dirs_lower.index('malicious')
                 malicious_path = os.path.join(root, dirs[idx])
             
-            # Break early jika sudah ditemukan
             if benign_path and malicious_path:
                 break
         
@@ -301,7 +304,6 @@ class DatasetPreview:
     
     def process_zip_file(self, uploaded_zip):
         """Process uploaded ZIP file untuk preview saja"""
-        
         temp_dir = tempfile.mkdtemp()
         
         try:
