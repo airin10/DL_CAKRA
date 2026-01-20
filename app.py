@@ -1,48 +1,27 @@
 """
-QR Code Security Analyzer - MODERN UI VERSION dengan CNN, LSTM, GRU
-[PERBAIKAN: Fixed LSTM/GRU metrics yang selalu 1.0]
+QR Code Security Analyzer - MODEL RESULTS DISPLAY ONLY
+[Hanya upload dan tampilkan hasil CNN, LSTM, GRU tanpa training]
 """
 import streamlit as st
-import numpy as np
 import pandas as pd
-import cv2
-import io
+import numpy as np
+import json
 import os
-import zipfile
-import tempfile
-import shutil
 import time
 import matplotlib.pyplot as plt
-from PIL import Image
+import plotly.graph_objects as go
+import plotly.express as px
+from plotly.subplots import make_subplots
 import warnings
-import json
-import hashlib
 warnings.filterwarnings('ignore')
 
 # === PAGE CONFIG ===
 st.set_page_config(
-    page_title="QR Code Model Trainer",
-    page_icon="🤖",
+    page_title="QR Code Model Results Viewer",
+    page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded"
 )
-
-# === IMPORT LIBRARIES ===
-import tensorflow as tf
-from tensorflow.keras import layers, models, Model, Sequential
-from tensorflow.keras.optimizers import Adam
-from tensorflow.keras.applications import MobileNetV2
-from tensorflow.keras.preprocessing.text import Tokenizer
-from tensorflow.keras.preprocessing.sequence import pad_sequences
-from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
-from sklearn.model_selection import train_test_split, StratifiedKFold
-from sklearn.utils.class_weight import compute_class_weight
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
-try:
-    from pyzbar.pyzbar import decode
-    QR_DECODER_AVAILABLE = True
-except ImportError:
-    QR_DECODER_AVAILABLE = False
 
 # === CUSTOM CSS MODERN ===
 st.markdown("""
@@ -101,17 +80,8 @@ body, .stApp, [class*="css"] {
     margin: 0.5rem auto 0;
 }
 
-/* Dataset Card */
-.dataset-card {
-    background: var(--gray-100);
-    border-radius: 16px;
-    padding: 1.25rem;
-    margin: 1rem 0;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.05);
-}
-
-/* Training Cards */
-.training-card {
+/* Model Card */
+.model-card {
     background: white;
     border-radius: 16px;
     padding: 1.5rem;
@@ -120,7 +90,7 @@ body, .stApp, [class*="css"] {
     transition: all 0.3s ease;
     border-left: 4px solid #cbd5e1;
 }
-.training-card:hover {
+.model-card:hover {
     transform: translateY(-2px);
     box-shadow: 0 6px 16px rgba(0,0,0,0.1);
 }
@@ -154,6 +124,10 @@ body, .stApp, [class*="css"] {
     margin: 0.5rem;
     box-shadow: 0 2px 8px rgba(0,0,0,0.05);
     text-align: center;
+    min-height: 120px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
 }
 .metric-value {
     font-size: 1.8rem;
@@ -163,6 +137,7 @@ body, .stApp, [class*="css"] {
 .metric-label {
     font-size: 0.9rem;
     color: #64748b;
+    font-weight: 500;
 }
 
 /* Best Model Banner */
@@ -184,7 +159,6 @@ body, .stApp, [class*="css"] {
 
 /* Buttons */
 .stButton>button {
-    width: 100%;
     border-radius: 12px;
     padding: 0.5rem 1rem;
     font-weight: 600;
@@ -213,9 +187,13 @@ body, .stApp, [class*="css"] {
     color: white;
 }
 
-/* Progress Bar */
-.stProgress > div > div > div {
-    background: linear-gradient(90deg, #4f46e5, #7c3aed);
+/* Info Box */
+.info-box {
+    background: linear-gradient(135deg, #dbeafe 0%, #bfdbfe 100%);
+    border: 1px solid #3b82f6;
+    border-radius: 10px;
+    padding: 1rem;
+    margin: 1rem 0;
 }
 
 /* Warning Box */
@@ -226,1262 +204,601 @@ body, .stApp, [class*="css"] {
     padding: 1rem;
     margin: 1rem 0;
 }
+
+/* Success Box */
+.success-box {
+    background: linear-gradient(135deg, #dcfce7 0%, #bbf7d0 100%);
+    border: 1px solid #22c55e;
+    border-radius: 10px;
+    padding: 1rem;
+    margin: 1rem 0;
+}
 </style>
 """, unsafe_allow_html=True)
 
-class DatasetProcessor:
-    """Class untuk processing dataset upload"""
+class ModelResultsAnalyzer:
+    """Class untuk analisis dan visualisasi hasil model"""
     
     def __init__(self):
-        self.IMG_SIZE = (224, 224)
-        self.MAX_LEN = 200
-        self.VOCAB_SIZE = 1000
-        self.tokenizer = None
-        self.dataset_info = {}
+        self.model_results = {}
+        self.model_histories = {}
+        self.best_model = None
     
-    def extract_all_files(self, zip_path, extract_to):
-        """Extract semua file dari ZIP"""
-        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-            zip_ref.extractall(extract_to)
-    
-    def find_folders(self, base_path):
-        """Cari folder benign dan malicious"""
-        benign_path = None
-        malicious_path = None
-        
-        for root, dirs, files in os.walk(base_path):
-            dirs_lower = [d.lower() for d in dirs]
-            
-            if 'benign' in dirs_lower:
-                idx = dirs_lower.index('benign')
-                benign_path = os.path.join(root, dirs[idx])
-            
-            if 'malicious' in dirs_lower:
-                idx = dirs_lower.index('malicious')
-                malicious_path = os.path.join(root, dirs[idx])
-        
-        return benign_path, malicious_path
-    
-    def count_images_in_folder(self, folder_path):
-        """Hitung gambar di folder"""
-        if not folder_path or not os.path.exists(folder_path):
-            return 0, []
-        
-        image_extensions = ['.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.gif']
-        image_files = []
-        
-        for filename in os.listdir(folder_path):
-            if any(filename.lower().endswith(ext) for ext in image_extensions):
-                image_files.append(os.path.join(folder_path, filename))
-        
-        return len(image_files), image_files[:5]
-    
-    def extract_qr_content_robust(self, image_path):
-        """Extract QR content dengan multiple attempts"""
-        try:
-            img = cv2.imread(image_path)
-            if img is None:
-                return ""
-            
-            decoded = decode(img)
-            if decoded:
-                return decoded[0].data.decode('utf-8', errors='ignore')
-            
-            # Try preprocessing
-            try:
-                gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-                _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-                decoded = decode(thresh)
-                if decoded:
-                    return decoded[0].data.decode('utf-8', errors='ignore')
-            except:
-                pass
-            
-            return ""
-            
-        except Exception as e:
-            return ""
-    
-    def generate_synthetic_text(self, label):
-        """Generate synthetic text untuk training"""
-        import random
-        
-        if label == 0:  # benign
-            templates = [
-                "https://safe-website.com/login",
-                "WIFI:S:Network;T:WPA2;P:password123;;",
-                "mailto:contact@company.com",
-                "BEGIN:VCARD\nFN:John Doe\nTEL:+1234567890\nEND:VCARD",
-                "https://www.trusted-site.com",
-                "geo:40.7128,-74.0060",
-                "SMSTO:+1234567890:Hello",
-                "MATMSG:TO:email@test.com;SUB:Test;BODY:Message;;",
-                "https://docs.google.com/document",
-                "bit.ly/safe-link-123"
-            ]
-        else:  # malicious
-            templates = [
-                "http://malicious-site.com/login.php",
-                "javascript:alert('XSS')",
-                "data:text/html;base64,PHNjcmlwdD5hbGVydCgnWCcpPC9zY3JpcHQ+",
-                "http://192.168.1.1:8080/admin",
-                "https://bit.ly/suspicious-xyz",
-                "Download free virus: http://bad.exe",
-                "You won $1,000,000! Claim: http://scam.com",
-                "Account locked! Reset: http://phishing-bank.com",
-                "Free Bitcoin: http://crypto-scam.com",
-                "http://free-gift-cards.xyz/login"
-            ]
-        
-        base_text = random.choice(templates)
-        variations = [
-            "",
-            "?id=" + str(random.randint(1000, 9999)),
-            "&session=" + ''.join(random.choices('abcdefghijklmnopqrstuvwxyz0123456789', k=8)),
-            "#" + ''.join(random.choices('abcdefghijklmnopqrstuvwxyz', k=5))
-        ]
-        
-        return base_text + random.choice(variations)
-    
-    def process_zip_file(self, uploaded_zip):
-        """Process uploaded ZIP file"""
-        
-        temp_dir = tempfile.mkdtemp()
-        
-        try:
-            zip_path = os.path.join(temp_dir, 'uploaded.zip')
-            with open(zip_path, 'wb') as f:
-                f.write(uploaded_zip.getvalue())
-            
-            extract_path = os.path.join(temp_dir, 'extracted')
-            os.makedirs(extract_path, exist_ok=True)
-            
-            self.extract_all_files(zip_path, extract_path)
-            
-            benign_path, malicious_path = self.find_folders(extract_path)
-            
-            benign_count, benign_samples = self.count_images_in_folder(benign_path)
-            malicious_count, malicious_samples = self.count_images_in_folder(malicious_path)
-            
-            dataset_info = {
-                'total_images': benign_count + malicious_count,
-                'benign_count': benign_count,
-                'malicious_count': malicious_count,
-                'benign_samples': benign_samples,
-                'malicious_samples': malicious_samples,
-                'benign_path': benign_path,
-                'malicious_path': malicious_path,
-                'extract_path': extract_path,
-                'has_benign': benign_count > 0,
-                'has_malicious': malicious_count > 0,
-                'temp_dir': temp_dir
-            }
-            
-            return dataset_info
-            
-        except Exception as e:
-            st.error(f"Error processing ZIP: {str(e)}")
-            if 'temp_dir' in locals():
-                shutil.rmtree(temp_dir, ignore_errors=True)
-            return None
-    
-    def prepare_training_data(self, dataset_info, use_synthetic=True):
-        """Prepare data untuk semua model"""
-        images = []
-        texts = []
-        labels = []
-        valid_text_count = 0
-
-        # === PERINGATAN KRITIS: Jika pyzbar tidak tersedia, synthetic text = data leakage ===
-        if not QR_DECODER_AVAILABLE and use_synthetic:
-            st.warning("⚠️ **Peringatan Keamanan Data**: `pyzbar` tidak tersedia. "
-                    "Menggunakan synthetic text akan menyebabkan DATA LEAKAGE karena teks dibuat dari label. "
-                    "Sistem secara otomatis menonaktifkan synthetic text.")
-            use_synthetic = False
-
-        # Process benign images
-        if dataset_info['has_benign'] and dataset_info['benign_path']:
-            for filename in os.listdir(dataset_info['benign_path']):
-                if filename.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp')):
-                    img_path = os.path.join(dataset_info['benign_path'], filename)
-                    try:
-                        img = cv2.imread(img_path)
-                        if img is not None:
-                            img_resized = cv2.resize(img, self.IMG_SIZE)
-                            img_resized = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB)
-                            images.append(img_resized)
-                            # Ekstraksi teks QR
-                            text_content = self.extract_qr_content_robust(img_path)
-                            if text_content:
-                                texts.append(text_content)
-                                valid_text_count += 1
-                            elif use_synthetic:
-                                # Hanya boleh dijalankan jika QR_DECODER_AVAILABLE = True
-                                texts.append(self.generate_synthetic_text(0))
-                            else:
-                                texts.append("")  # teks kosong
-                            labels.append(0)
-                    except Exception as e:
-                        continue
-
-        # Process malicious images
-        if dataset_info['has_malicious'] and dataset_info['malicious_path']:
-            for filename in os.listdir(dataset_info['malicious_path']):
-                if filename.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp')):
-                    img_path = os.path.join(dataset_info['malicious_path'], filename)
-                    try:
-                        img = cv2.imread(img_path)
-                        if img is not None:
-                            img_resized = cv2.resize(img, self.IMG_SIZE)
-                            img_resized = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB)
-                            images.append(img_resized)
-                            text_content = self.extract_qr_content_robust(img_path)
-                            if text_content:
-                                texts.append(text_content)
-                                valid_text_count += 1
-                            elif use_synthetic:
-                                texts.append(self.generate_synthetic_text(1))
-                            else:
-                                texts.append("")
-                            labels.append(1)
-                    except Exception as e:
-                        continue
-        
-        # === CHECK IF DATA EXISTS ===
-        if len(images) == 0:
-            st.error("❌ Tidak ada gambar yang berhasil diproses!")
-            return None
-        
-        # === CONVERT TO NUMPY ===
-        images_array = np.array(images, dtype='float32') / 255.0
-        labels_array = np.array(labels)
-        texts_array = np.array(texts)
-        
-        # === CHECK LABEL DISTRIBUTION ===
-        unique_labels, label_counts = np.unique(labels_array, return_counts=True)
-        
-        if len(unique_labels) < 2:
-            st.error(f"❌ Hanya ada {len(unique_labels)} kelas. Butuh minimal 2 kelas (benign & malicious).")
-            return None
-        
-        # === SPLIT DATA ===
-        # GUNAKAN SAME SPLIT UNTUK SEMUA MODEL
-        try:
-            # Gunakan stratified split untuk menjaga distribusi
-            X_train, X_test, y_train, y_test, texts_train, texts_test = train_test_split(
-                images_array,
-                labels_array,
-                texts_array,
-                test_size=0.2,
-                random_state=42,  # FIXED SEED
-                stratify=labels_array
-            )
-        except Exception as e:
-            # Fallback split
-            split_idx = int(len(images_array) * 0.8)
-            X_train = images_array[:split_idx]
-            X_test = images_array[split_idx:]
-            y_train = labels_array[:split_idx]
-            y_test = labels_array[split_idx:]
-            texts_train = texts_array[:split_idx]
-            texts_test = texts_array[split_idx:]
-        
-        # === DEBUG INFO ===
-        st.markdown('<div class="warning-box">', unsafe_allow_html=True)
-        st.write("**Data Split Information:**")
-        st.write(f"- Total samples: {len(images_array)}")
-        st.write(f"- Train samples: {len(X_train)} (benign: {sum(y_train==0)}, malicious: {sum(y_train==1)})")
-        st.write(f"- Test samples: {len(X_test)} (benign: {sum(y_test==0)}, malicious: {sum(y_test==1)})")
-        st.write(f"- Valid text extracted: {valid_text_count}/{len(images_array)}")
-        st.markdown('</div>', unsafe_allow_html=True)
-        
-        # === PREPARE TEXT TOKENIZER ===
-        try:
-            self.tokenizer = Tokenizer(
-                num_words=self.VOCAB_SIZE,
-                char_level=False,
-                lower=True,
-                oov_token='<OOV>',
-                filters='!"#$%&()*+,-./:;<=>?@[\\]^_`{|}~\t\n'
-            )
-            
-            self.tokenizer.fit_on_texts(texts_train)
-            
-            # Convert texts to sequences
-            train_sequences = self.tokenizer.texts_to_sequences(texts_train)
-            test_sequences = self.tokenizer.texts_to_sequences(texts_test)
-            
-            # Handle empty sequences
-            for i in range(len(train_sequences)):
-                if len(train_sequences[i]) == 0:
-                    train_sequences[i] = [self.tokenizer.word_index.get('<OOV>', 1)]
-            
-            for i in range(len(test_sequences)):
-                if len(test_sequences[i]) == 0:
-                    test_sequences[i] = [self.tokenizer.word_index.get('<OOV>', 1)]
-            
-            # Pad sequences
-            X_train_seq = pad_sequences(
-                train_sequences,
-                maxlen=self.MAX_LEN,
-                padding='post',
-                truncating='post',
-                value=0
-            )
-            
-            X_test_seq = pad_sequences(
-                test_sequences,
-                maxlen=self.MAX_LEN,
-                padding='post',
-                truncating='post',
-                value=0
-            )
-            
-            vocab_size = min(self.VOCAB_SIZE, len(self.tokenizer.word_index) + 1)
-            
-            # Debug tokenizer info
-            st.info(f"Tokenizer Info: Vocabulary size = {vocab_size}")
-            st.info(f"Sample sequence length: {len(X_train_seq[0]) if len(X_train_seq) > 0 else 0}")
-            
-        except Exception as e:
-            st.error(f"Error in text processing: {str(e)}")
-            # Fallback: create simple sequences
-            vocab_size = 100
-            X_train_seq = np.zeros((len(texts_train), self.MAX_LEN))
-            X_test_seq = np.zeros((len(texts_test), self.MAX_LEN))
-        
-        # === CALCULATE CLASS WEIGHTS ===
-        try:
-            classes = np.unique(y_train)
-            class_weights = compute_class_weight(
-                class_weight='balanced',
-                classes=classes,
-                y=y_train
-            )
-            class_weight_dict = dict(zip(classes, class_weights))
-        except Exception as e:
-            class_weight_dict = {0: 1.0, 1: 1.0}
-        
-        return {
-            # CNN data
-            'X_train_img': X_train,
-            'X_test_img': X_test,
-            'y_train_img': y_train,
-            'y_test_img': y_test,
-            
-            # Text data
-            'X_train_seq': X_train_seq,
-            'X_test_seq': X_test_seq,
-            'y_train_txt': y_train,  # Sama dengan y_train_img
-            'y_test_txt': y_test,    # Sama dengan y_test_img
-            'X_train_txt': texts_train,
-            'X_test_txt': texts_test,
-            
-            # Info
-            'total_samples': len(images),
-            'valid_texts': valid_text_count,
-            'class_weights': class_weight_dict,
-            'vocab_size': vocab_size,
-            'label_distribution': dict(zip(unique_labels, label_counts)),
-            'max_len': self.MAX_LEN
-        }
-
-class CompleteModelTrainer:
-    """Complete trainer untuk semua model - FIXED: Metrics tidak jadi 1.0"""
-    
-    def __init__(self):
-        self.models = {}
-        self.histories = {}
-        self.results = {}
-        self.is_cnn_loaded = False
-    
-    def load_cnn_offline_results(self, eval_file, history_file):
-        """Load CNN results dari file JSON"""
+    def load_model_results(self, model_name, eval_file, history_file=None):
+        """Load hasil model dari file JSON"""
         try:
             # Load evaluation results
-            eval_content = eval_file.read().decode('utf-8')
-            cnn_eval = json.loads(eval_content)
+            eval_content = eval_file.getvalue().decode('utf-8') if hasattr(eval_file, 'getvalue') else eval_file.read().decode('utf-8')
+            eval_data = json.loads(eval_content)
             
-            # Load history
-            history_content = history_file.read().decode('utf-8')
-            cnn_history = json.loads(history_content)
-            
-            # Ensure all required metrics exist
+            # Validasi format file
             required_metrics = ['accuracy', 'precision', 'recall', 'f1_score']
             for metric in required_metrics:
-                if metric not in cnn_eval:
-                    if metric == 'f1_score':
-                        # Calculate F1-score from precision and recall
-                        precision = cnn_eval.get('precision', 0)
-                        recall = cnn_eval.get('recall', 0)
-                        if precision + recall > 0:
-                            cnn_eval['f1_score'] = 2 * (precision * recall) / (precision + recall)
-                        else:
-                            cnn_eval['f1_score'] = 0.0
-                    else:
-                        cnn_eval[metric] = 0
+                if metric not in eval_data:
+                    st.error(f"❌ File {model_name}_eval.json tidak memiliki metric '{metric}'")
+                    return False
+            
+            # Load history jika ada
+            history_data = {}
+            if history_file:
+                try:
+                    history_content = history_file.getvalue().decode('utf-8') if hasattr(history_file, 'getvalue') else history_file.read().decode('utf-8')
+                    history_data = json.loads(history_content)
+                except:
+                    st.warning(f"⚠️ History untuk {model_name} tidak valid atau kosong")
             
             # Simpan hasil
-            self.results['cnn'] = cnn_eval
-            self.histories['cnn'] = cnn_history
-            self.is_cnn_loaded = True
+            self.model_results[model_name] = eval_data
+            if history_data:
+                self.model_histories[model_name] = history_data
             
             return True
             
         except Exception as e:
-            st.error(f"❌ Error loading CNN JSON results: {e}")
+            st.error(f"❌ Error loading {model_name} results: {str(e)}")
             return False
     
-    def display_cnn_results(self):
-        """Tampilkan hasil CNN dari JSON"""
-        if 'cnn' not in self.results:
-            return None
+    def validate_metrics(self, metrics):
+        """Validasi apakah metrics valid (tidak semua 1.0)"""
+        if not metrics:
+            return False
         
-        cnn_eval = self.results['cnn']
+        # Cek jika semua metrics 1.0 atau 0.0
+        all_ones = all(abs(v - 1.0) < 0.001 for k, v in metrics.items() 
+                      if k in ['accuracy', 'precision', 'recall', 'f1_score'])
+        all_zeros = all(abs(v - 0.0) < 0.001 for k, v in metrics.items() 
+                       if k in ['accuracy', 'precision', 'recall', 'f1_score'])
         
-        # Create metric cards
+        if all_ones:
+            st.warning("⚠️ Semua metrics = 1.0 (kemungkinan overfitting atau data leakage)")
+            return False
+        elif all_zeros:
+            st.warning("⚠️ Semua metrics = 0.0 (model tidak belajar)")
+            return False
+        
+        return True
+    
+    def get_metric_color(self, value):
+        """Get color based on metric value"""
+        if value >= 0.9:
+            return '#10b981'  # Green
+        elif value >= 0.8:
+            return '#f59e0b'  # Yellow
+        elif value >= 0.7:
+            return '#ef4444'  # Red
+        else:
+            return '#6b7280'  # Gray
+    
+    def display_model_card(self, model_name, model_results):
+        """Display model results card"""
+        card_class = f"{model_name}-card"
+        
+        st.markdown(f'<div class="model-card {card_class}">', unsafe_allow_html=True)
+        
+        # Header dengan icon
+        icons = {
+            'cnn': '🖼️',
+            'lstm': '📝', 
+            'gru': '🌀'
+        }
+        
+        col_header = st.columns([1, 8])
+        with col_header[0]:
+            st.markdown(f"<h2 style='margin:0;'>{icons.get(model_name, '🤖')}</h2>", unsafe_allow_html=True)
+        with col_header[1]:
+            st.subheader(f"{model_name.upper()} Results")
+        
+        # Metrics dalam 4 kolom
         col1, col2, col3, col4 = st.columns(4)
         
         with col1:
+            accuracy = model_results.get('accuracy', 0)
+            color = self.get_metric_color(accuracy)
             st.markdown(f"""
             <div class="metric-card">
                 <div class="metric-label">Accuracy</div>
-                <div class="metric-value" style="color: {'#10b981' if cnn_eval['accuracy'] > 0.8 else '#f59e0b'}">
-                    {cnn_eval['accuracy']:.4f}
+                <div class="metric-value" style="color: {color}">
+                    {accuracy:.4f}
                 </div>
             </div>
             """, unsafe_allow_html=True)
         
         with col2:
+            precision = model_results.get('precision', 0)
+            color = self.get_metric_color(precision)
             st.markdown(f"""
             <div class="metric-card">
                 <div class="metric-label">Precision</div>
-                <div class="metric-value" style="color: {'#10b981' if cnn_eval['precision'] > 0.8 else '#f59e0b'}">
-                    {cnn_eval['precision']:.4f}
+                <div class="metric-value" style="color: {color}">
+                    {precision:.4f}
                 </div>
             </div>
             """, unsafe_allow_html=True)
         
         with col3:
+            recall = model_results.get('recall', 0)
+            color = self.get_metric_color(recall)
             st.markdown(f"""
             <div class="metric-card">
                 <div class="metric-label">Recall</div>
-                <div class="metric-value" style="color: {'#10b981' if cnn_eval['recall'] > 0.8 else '#f59e0b'}">
-                    {cnn_eval['recall']:.4f}
+                <div class="metric-value" style="color: {color}">
+                    {recall:.4f}
                 </div>
             </div>
             """, unsafe_allow_html=True)
         
         with col4:
+            f1_score = model_results.get('f1_score', 0)
+            color = self.get_metric_color(f1_score)
             st.markdown(f"""
             <div class="metric-card">
                 <div class="metric-label">F1-Score</div>
-                <div class="metric-value" style="color: {'#10b981' if cnn_eval['f1_score'] > 0.8 else '#f59e0b'}">
-                    {cnn_eval['f1_score']:.4f}
+                <div class="metric-value" style="color: {color}">
+                    {f1_score:.4f}
                 </div>
             </div>
             """, unsafe_allow_html=True)
         
-        # Display history plot if available
-        if 'cnn' in self.histories:
-            self.plot_cnn_history()
-    
-    def plot_cnn_history(self):
-        """Plot CNN training history"""
-        history = self.histories['cnn']
+        # Additional metrics jika ada
+        additional_metrics = {k: v for k, v in model_results.items() 
+                            if k not in ['accuracy', 'precision', 'recall', 'f1_score'] 
+                            and isinstance(v, (int, float))}
         
-        fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+        if additional_metrics:
+            st.write("**Additional Metrics:**")
+            cols = st.columns(len(additional_metrics))
+            for idx, (metric_name, value) in enumerate(additional_metrics.items()):
+                with cols[idx]:
+                    st.metric(metric_name.replace('_', ' ').title(), f"{value:.4f}")
         
-        # Accuracy plot
-        ax1 = axes[0]
-        if 'accuracy' in history:
-            ax1.plot(history['accuracy'], label='Training', linewidth=2, color='#3B82F6')
-        if 'val_accuracy' in history:
-            ax1.plot(history['val_accuracy'], label='Validation', linewidth=2, color='#10B981')
-        ax1.set_title('CNN Accuracy History', fontsize=14, fontweight='bold')
-        ax1.set_xlabel('Epoch', fontsize=12)
-        ax1.set_ylabel('Accuracy', fontsize=12)
-        ax1.legend(loc='best')
-        ax1.grid(True, alpha=0.3)
-        ax1.set_ylim([0, 1])
-        
-        # Loss plot
-        ax2 = axes[1]
-        if 'loss' in history:
-            ax2.plot(history['loss'], label='Training Loss', linewidth=2, color='#EF4444')
-        if 'val_loss' in history:
-            ax2.plot(history['val_loss'], label='Validation Loss', linewidth=2, color='#F59E0B')
-        ax2.set_title('CNN Loss History', fontsize=14, fontweight='bold')
-        ax2.set_xlabel('Epoch', fontsize=12)
-        ax2.set_ylabel('Loss', fontsize=12)
-        ax2.legend(loc='best')
-        ax2.grid(True, alpha=0.3)
-        
-        plt.tight_layout()
-        st.pyplot(fig)
-    
-    def build_lstm_model(self, vocab_size, max_len=200):
-        """Build LSTM model dengan regularization untuk mencegah overfitting"""
-        model = Sequential([
-            layers.Embedding(
-                input_dim=vocab_size,
-                output_dim=64,
-                input_length=max_len,
-                mask_zero=True
-            ),
-            layers.Dropout(0.2),  # Dropout di embedding layer
-            layers.Bidirectional(layers.LSTM(64, return_sequences=True, dropout=0.3, recurrent_dropout=0.3)),
-            layers.BatchNormalization(),
-            layers.Bidirectional(layers.LSTM(32, dropout=0.3, recurrent_dropout=0.3)),
-            layers.Dropout(0.4),
-            layers.Dense(32, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(0.001)),
-            layers.Dropout(0.3),
-            layers.Dense(1, activation='sigmoid')
-        ])
-        
-        model.compile(
-            optimizer=Adam(learning_rate=0.001),
-            loss='binary_crossentropy',
-            metrics=['accuracy']
-        )
-        
-        return model
-    
-    def build_gru_model(self, vocab_size, max_len=200):
-        """Build GRU model dengan regularization"""
-        model = Sequential([
-            layers.Embedding(
-                input_dim=vocab_size,
-                output_dim=64,
-                input_length=max_len,
-                mask_zero=True
-            ),
-            layers.Dropout(0.2),
-            layers.Bidirectional(layers.GRU(64, return_sequences=True, dropout=0.3, recurrent_dropout=0.3)),
-            layers.BatchNormalization(),
-            layers.Bidirectional(layers.GRU(32, dropout=0.3, recurrent_dropout=0.3)),
-            layers.Dropout(0.4),
-            layers.Dense(32, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(0.001)),
-            layers.Dropout(0.3),
-            layers.Dense(1, activation='sigmoid')
-        ])
-        
-        model.compile(
-            optimizer=Adam(learning_rate=0.001),
-            loss='binary_crossentropy',
-            metrics=['accuracy']
-        )
-        
-        return model
-    
-    def validate_model(self, model, X_test, y_test, model_name):
-        """Validasi model dan cek metrics"""
-        try:
-            y_pred_prob = model.predict(X_test, verbose=0)
-            y_pred = (y_pred_prob > 0.5).astype(int).flatten()
-            
-            # Debug information
-            unique_preds, pred_counts = np.unique(y_pred, return_counts=True)
-            unique_true, true_counts = np.unique(y_test, return_counts=True)
-            
-            st.markdown('<div class="warning-box">', unsafe_allow_html=True)
-            st.write(f"**{model_name} Debug Info:**")
-            st.write(f"Predictions distribution: {dict(zip(unique_preds, pred_counts))}")
-            st.write(f"True labels distribution: {dict(zip(unique_true, true_counts))}")
-            
-            # Jika semua predictions sama, ada masalah
-            if len(unique_preds) == 1:
-                st.warning(f"⚠️ Model hanya memprediksi satu kelas: {unique_preds[0]}")
-                st.write(f"Sample prediction probabilities: {y_pred_prob[:10].flatten()}")
-            st.markdown('</div>', unsafe_allow_html=True)
-            
-            # Calculate metrics
-            accuracy = accuracy_score(y_test, y_pred)
-            precision = precision_score(y_test, y_pred, zero_division=0)
-            recall = recall_score(y_test, y_pred, zero_division=0)
-            f1 = f1_score(y_test, y_pred, zero_division=0)
-            
-            # Confusion matrix
-            cm = confusion_matrix(y_test, y_pred)
-            
-            return {
-                'accuracy': accuracy,
-                'precision': precision,
-                'recall': recall,
-                'f1_score': f1,
-                'confusion_matrix': cm,
-                'y_pred': y_pred,
-                'y_pred_prob': y_pred_prob
-            }
-            
-        except Exception as e:
-            st.error(f"Error validating {model_name}: {e}")
-            return None
-    
-    def train_lstm(self, training_data, epochs=15, batch_size=32):
-        """Train LSTM model"""
-        st.markdown('<div class="training-card lstm-card">', unsafe_allow_html=True)
-        
-        # Header with icon
-        col_header = st.columns([1, 8])
-        with col_header[0]:
-            st.markdown("<h2 style='margin:0;'>📝</h2>", unsafe_allow_html=True)
-        with col_header[1]:
-            st.subheader("Training LSTM Model")
-        
-        # Validasi data sebelum training
-        if training_data['vocab_size'] <= 1:
-            st.error("❌ Vocabulary size terlalu kecil untuk training LSTM")
-            st.markdown('</div>', unsafe_allow_html=True)
-            return None
-        
-        # Tampilkan info data
-        st.write(f"**Training Info:**")
-        st.write(f"- Vocabulary size: {training_data['vocab_size']}")
-        st.write(f"- Sequence length: {training_data['max_len']}")
-        st.write(f"- Train samples: {len(training_data['X_train_seq'])}")
-        st.write(f"- Test samples: {len(training_data['X_test_seq'])}")
-        
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-        
-        model = self.build_lstm_model(training_data['vocab_size'], training_data['max_len'])
-        
-        # Callbacks untuk mencegah overfitting
-        early_stopping = EarlyStopping(
-            monitor='val_loss',
-            patience=5,
-            restore_best_weights=True,
-            verbose=0
-        )
-        
-        reduce_lr = ReduceLROnPlateau(
-            monitor='val_loss',
-            factor=0.5,
-            patience=2,
-            min_lr=0.00001,
-            verbose=0
-        )
-        
-        class LSTMCallback(tf.keras.callbacks.Callback):
-            def on_epoch_end(self, epoch, logs=None):
-                progress = (epoch + 1) / epochs
-                progress_bar.progress(progress)
-                status_text.text(
-                    f"Epoch {epoch+1}/{epochs} - "
-                    f"Loss: {logs.get('loss', 0):.4f}, "
-                    f"Accuracy: {logs.get('accuracy', 0):.4f}"
-                )
-        
-        # Training
-        try:
-            with st.spinner("Training LSTM model..."):
-                history = model.fit(
-                    training_data['X_train_seq'],
-                    training_data['y_train_txt'],
-                    validation_data=(
-                        training_data['X_test_seq'],
-                        training_data['y_test_txt']
-                    ),
-                    epochs=epochs,
-                    batch_size=batch_size,
-                    class_weight=training_data.get('class_weights'),
-                    verbose=0,
-                    callbacks=[LSTMCallback(), early_stopping, reduce_lr]
-                )
-            
-            progress_bar.progress(1.0)
-            status_text.text("✅ LSTM Training Complete!")
-            
-            # Validasi model
-            validation_results = self.validate_model(
-                model,
-                training_data['X_test_seq'],
-                training_data['y_test_txt'],
-                "LSTM"
-            )
-            
-            if validation_results:
-                # Simpan model dan hasil
-                self.models['lstm'] = model
-                self.histories['lstm'] = history.history
-                self.results['lstm'] = {
-                    'accuracy': validation_results['accuracy'],
-                    'precision': validation_results['precision'],
-                    'recall': validation_results['recall'],
-                    'f1_score': validation_results['f1_score']
-                }
-                
-                # Display results
-                self.display_model_results('lstm')
-                
-                # Plot training history
-                self.plot_training_history(history, 'LSTM')
-                
-                # Confusion matrix
-                self.plot_confusion_matrix(
-                    validation_results['confusion_matrix'],
-                    'LSTM Confusion Matrix'
-                )
-            
-        except Exception as e:
-            st.error(f"❌ LSTM Training Error: {str(e)}")
-            import traceback
-            st.error(traceback.format_exc())
+        # Plot training history jika ada
+        if model_name in self.model_histories:
+            self.plot_training_history(model_name)
         
         st.markdown('</div>', unsafe_allow_html=True)
-        return model
     
-    def train_gru(self, training_data, epochs=15, batch_size=32):
-        """Train GRU model"""
-        st.markdown('<div class="training-card gru-card">', unsafe_allow_html=True)
-        
-        # Header with icon
-        col_header = st.columns([1, 8])
-        with col_header[0]:
-            st.markdown("<h2 style='margin:0;'>🌀</h2>", unsafe_allow_html=True)
-        with col_header[1]:
-            st.subheader("Training GRU Model")
-        
-        # Validasi data sebelum training
-        if training_data['vocab_size'] <= 1:
-            st.error("❌ Vocabulary size terlalu kecil untuk training GRU")
-            st.markdown('</div>', unsafe_allow_html=True)
-            return None
-        
-        # Tampilkan info data
-        st.write(f"**Training Info:**")
-        st.write(f"- Vocabulary size: {training_data['vocab_size']}")
-        st.write(f"- Sequence length: {training_data['max_len']}")
-        st.write(f"- Train samples: {len(training_data['X_train_seq'])}")
-        st.write(f"- Test samples: {len(training_data['X_test_seq'])}")
-        
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-        
-        model = self.build_gru_model(training_data['vocab_size'], training_data['max_len'])
-        
-        # Callbacks untuk mencegah overfitting
-        early_stopping = EarlyStopping(
-            monitor='val_loss',
-            patience=5,
-            restore_best_weights=True,
-            verbose=0
-        )
-        
-        reduce_lr = ReduceLROnPlateau(
-            monitor='val_loss',
-            factor=0.5,
-            patience=2,
-            min_lr=0.00001,
-            verbose=0
-        )
-        
-        class GRUCallback(tf.keras.callbacks.Callback):
-            def on_epoch_end(self, epoch, logs=None):
-                progress = (epoch + 1) / epochs
-                progress_bar.progress(progress)
-                status_text.text(
-                    f"Epoch {epoch+1}/{epochs} - "
-                    f"Loss: {logs.get('loss', 0):.4f}, "
-                    f"Accuracy: {logs.get('accuracy', 0):.4f}"
-                )
-        
-        # Training
-        try:
-            with st.spinner("Training GRU model..."):
-                history = model.fit(
-                    training_data['X_train_seq'],
-                    training_data['y_train_txt'],
-                    validation_data=(
-                        training_data['X_test_seq'],
-                        training_data['y_test_txt']
-                    ),
-                    epochs=epochs,
-                    batch_size=batch_size,
-                    class_weight=training_data.get('class_weights'),
-                    verbose=0,
-                    callbacks=[GRUCallback(), early_stopping, reduce_lr]
-                )
-            
-            progress_bar.progress(1.0)
-            status_text.text("✅ GRU Training Complete!")
-            
-            # Validasi model
-            validation_results = self.validate_model(
-                model,
-                training_data['X_test_seq'],
-                training_data['y_test_txt'],
-                "GRU"
-            )
-            
-            if validation_results:
-                # Simpan model dan hasil
-                self.models['gru'] = model
-                self.histories['gru'] = history.history
-                self.results['gru'] = {
-                    'accuracy': validation_results['accuracy'],
-                    'precision': validation_results['precision'],
-                    'recall': validation_results['recall'],
-                    'f1_score': validation_results['f1_score']
-                }
-                
-                # Display results
-                self.display_model_results('gru')
-                
-                # Plot training history
-                self.plot_training_history(history, 'GRU')
-                
-                # Confusion matrix
-                self.plot_confusion_matrix(
-                    validation_results['confusion_matrix'],
-                    'GRU Confusion Matrix'
-                )
-            
-        except Exception as e:
-            st.error(f"❌ GRU Training Error: {str(e)}")
-            import traceback
-            st.error(traceback.format_exc())
-        
-        st.markdown('</div>', unsafe_allow_html=True)
-        return model
-    
-    def plot_training_history(self, history, model_name):
-        """Plot training history"""
-        fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-        
-        # Accuracy plot
-        ax1 = axes[0]
-        if 'accuracy' in history.history:
-            ax1.plot(history.history['accuracy'], label='Training', linewidth=2, color='#10B981')
-        if 'val_accuracy' in history.history:
-            ax1.plot(history.history['val_accuracy'], label='Validation', linewidth=2, color='#3B82F6')
-        ax1.set_title(f'{model_name} Accuracy History', fontsize=14, fontweight='bold')
-        ax1.set_xlabel('Epoch')
-        ax1.set_ylabel('Accuracy')
-        ax1.legend()
-        ax1.grid(True, alpha=0.3)
-        ax1.set_ylim([0, 1])
-        
-        # Loss plot
-        ax2 = axes[1]
-        if 'loss' in history.history:
-            ax2.plot(history.history['loss'], label='Training Loss', linewidth=2, color='#EF4444')
-        if 'val_loss' in history.history:
-            ax2.plot(history.history['val_loss'], label='Validation Loss', linewidth=2, color='#F59E0B')
-        ax2.set_title(f'{model_name} Loss History', fontsize=14, fontweight='bold')
-        ax2.set_xlabel('Epoch')
-        ax2.set_ylabel('Loss')
-        ax2.legend()
-        ax2.grid(True, alpha=0.3)
-        
-        plt.tight_layout()
-        st.pyplot(fig)
-    
-    def plot_confusion_matrix(self, cm, title):
-        """Plot confusion matrix"""
-        fig, ax = plt.subplots(figsize=(6, 5))
-        im = ax.imshow(cm, interpolation='nearest', cmap=plt.cm.Blues)
-        ax.figure.colorbar(im, ax=ax)
-        
-        ax.set(xticks=np.arange(cm.shape[1]),
-               yticks=np.arange(cm.shape[0]),
-               xticklabels=['Benign', 'Malicious'],
-               yticklabels=['Benign', 'Malicious'],
-               title=title,
-               ylabel='True label',
-               xlabel='Predicted label')
-        
-        # Rotate the tick labels and set their alignment
-        plt.setp(ax.get_xticklabels(), rotation=45, ha="right",
-                 rotation_mode="anchor")
-        
-        # Loop over data dimensions and create text annotations
-        thresh = cm.max() / 2.
-        for i in range(cm.shape[0]):
-            for j in range(cm.shape[1]):
-                ax.text(j, i, format(cm[i, j], 'd'),
-                        ha="center", va="center",
-                        color="white" if cm[i, j] > thresh else "black")
-        
-        fig.tight_layout()
-        st.pyplot(fig)
-    
-    def display_model_results(self, model_name):
-        """Display model results in metric cards"""
-        if model_name not in self.results:
+    def plot_training_history(self, model_name):
+        """Plot training history menggunakan Plotly"""
+        if model_name not in self.model_histories:
             return
         
-        results = self.results[model_name]
+        history = self.model_histories[model_name]
         
-        # Create metric cards
-        col1, col2, col3, col4 = st.columns(4)
+        # Create subplots
+        fig = make_subplots(
+            rows=1, 
+            cols=2,
+            subplot_titles=(f'{model_name.upper()} Accuracy History', 
+                           f'{model_name.upper()} Loss History')
+        )
         
-        with col1:
-            accuracy_color = '#10b981' if results['accuracy'] > 0.8 else '#f59e0b' if results['accuracy'] > 0.6 else '#ef4444'
-            st.markdown(f"""
-            <div class="metric-card">
-                <div class="metric-label">Accuracy</div>
-                <div class="metric-value" style="color: {accuracy_color}">
-                    {results['accuracy']:.4f}
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
+        # Accuracy plot
+        if 'accuracy' in history:
+            fig.add_trace(
+                go.Scatter(
+                    y=history['accuracy'],
+                    mode='lines+markers',
+                    name='Training Accuracy',
+                    line=dict(color='#3B82F6', width=2),
+                    marker=dict(size=6)
+                ),
+                row=1, col=1
+            )
         
-        with col2:
-            precision_color = '#10b981' if results['precision'] > 0.8 else '#f59e0b' if results['precision'] > 0.6 else '#ef4444'
-            st.markdown(f"""
-            <div class="metric-card">
-                <div class="metric-label">Precision</div>
-                <div class="metric-value" style="color: {precision_color}">
-                    {results['precision']:.4f}
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
+        if 'val_accuracy' in history:
+            fig.add_trace(
+                go.Scatter(
+                    y=history['val_accuracy'],
+                    mode='lines+markers',
+                    name='Validation Accuracy',
+                    line=dict(color='#10B981', width=2),
+                    marker=dict(size=6)
+                ),
+                row=1, col=1
+            )
         
-        with col3:
-            recall_color = '#10b981' if results['recall'] > 0.8 else '#f59e0b' if results['recall'] > 0.6 else '#ef4444'
-            st.markdown(f"""
-            <div class="metric-card">
-                <div class="metric-label">Recall</div>
-                <div class="metric-value" style="color: {recall_color}">
-                    {results['recall']:.4f}
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
+        # Loss plot
+        if 'loss' in history:
+            fig.add_trace(
+                go.Scatter(
+                    y=history['loss'],
+                    mode='lines+markers',
+                    name='Training Loss',
+                    line=dict(color='#EF4444', width=2),
+                    marker=dict(size=6)
+                ),
+                row=1, col=2
+            )
         
-        with col4:
-            f1_color = '#10b981' if results['f1_score'] > 0.8 else '#f59e0b' if results['f1_score'] > 0.6 else '#ef4444'
-            st.markdown(f"""
-            <div class="metric-card">
-                <div class="metric-label">F1-Score</div>
-                <div class="metric-value" style="color: {f1_color}">
-                    {results['f1_score']:.4f}
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
+        if 'val_loss' in history:
+            fig.add_trace(
+                go.Scatter(
+                    y=history['val_loss'],
+                    mode='lines+markers',
+                    name='Validation Loss',
+                    line=dict(color='#F59E0B', width=2),
+                    marker=dict(size=6)
+                ),
+                row=1, col=2
+            )
+        
+        # Update layout
+        fig.update_layout(
+            height=400,
+            showlegend=True,
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            template="plotly_white"
+        )
+        
+        fig.update_xaxes(title_text="Epoch", row=1, col=1)
+        fig.update_xaxes(title_text="Epoch", row=1, col=2)
+        fig.update_yaxes(title_text="Accuracy", row=1, col=1, range=[0, 1])
+        fig.update_yaxes(title_text="Loss", row=1, col=2)
+        
+        st.plotly_chart(fig, use_container_width=True)
     
-    def compare_models(self):
-        """Bandingkan semua model"""
-        if not self.results:
+    def determine_best_model(self):
+        """Tentukan model terbaik berdasarkan F1-Score"""
+        if not self.model_results:
+            return None, None
+        
+        best_model = None
+        best_f1 = -1
+        
+        for model_name, results in self.model_results.items():
+            f1 = results.get('f1_score', 0)
+            if f1 > best_f1:
+                best_f1 = f1
+                best_model = model_name
+        
+        self.best_model = best_model
+        return best_model, best_f1
+    
+    def create_comparison_table(self):
+        """Buat tabel perbandingan semua model"""
+        if not self.model_results:
             return None
         
         comparison_data = []
-        for model_name, results in self.results.items():
-            comparison_data.append({
+        for model_name, results in self.model_results.items():
+            row = {
                 'Model': model_name.upper(),
-                'Accuracy': results['accuracy'],
-                'Precision': results['precision'],
-                'Recall': results['recall'],
-                'F1-Score': results['f1_score']
-            })
+                'Accuracy': results.get('accuracy', 0),
+                'Precision': results.get('precision', 0),
+                'Recall': results.get('recall', 0),
+                'F1-Score': results.get('f1_score', 0)
+            }
+            comparison_data.append(row)
         
-        return pd.DataFrame(comparison_data)
+        df = pd.DataFrame(comparison_data)
+        return df
     
-    def get_best_model(self):
-        """Dapatkan model terbaik berdasarkan F1-Score"""
-        if not self.results:
-            return None, None
+    def plot_comparison_chart(self):
+        """Plot chart perbandingan model"""
+        if not self.model_results:
+            return None
         
-        best_model = max(self.results.items(), key=lambda x: x[1]['f1_score'])
-        return best_model[0], best_model[1]
-
+        # Prepare data
+        metrics = ['Accuracy', 'Precision', 'Recall', 'F1-Score']
+        models = list(self.model_results.keys())
+        
+        fig = go.Figure()
+        
+        # Colors for each model
+        colors = {
+            'cnn': '#3B82F6',
+            'lstm': '#10B981',
+            'gru': '#8B5CF6'
+        }
+        
+        # Add bars for each model
+        for model in models:
+            values = [
+                self.model_results[model].get('accuracy', 0),
+                self.model_results[model].get('precision', 0),
+                self.model_results[model].get('recall', 0),
+                self.model_results[model].get('f1_score', 0)
+            ]
+            
+            fig.add_trace(go.Bar(
+                name=model.upper(),
+                x=metrics,
+                y=values,
+                marker_color=colors.get(model, '#94a3b8'),
+                text=[f'{v:.3f}' for v in values],
+                textposition='auto',
+            ))
+        
+        # Update layout
+        fig.update_layout(
+            title="Model Performance Comparison",
+            xaxis_title="Metrics",
+            yaxis_title="Score",
+            yaxis=dict(range=[0, 1]),
+            barmode='group',
+            template="plotly_white",
+            height=500,
+            showlegend=True
+        )
+        
+        # Add threshold lines
+        fig.add_hline(y=0.9, line_dash="dash", line_color="#10b981", 
+                     annotation_text="Excellent", annotation_position="right")
+        fig.add_hline(y=0.8, line_dash="dash", line_color="#f59e0b", 
+                     annotation_text="Good", annotation_position="right")
+        fig.add_hline(y=0.7, line_dash="dash", line_color="#ef4444", 
+                     annotation_text="Fair", annotation_position="right")
+        
+        return fig
+    
+    def radar_chart(self):
+        """Create radar chart untuk perbandingan model"""
+        if len(self.model_results) < 2:
+            return None
+        
+        metrics = ['Accuracy', 'Precision', 'Recall', 'F1-Score']
+        
+        fig = go.Figure()
+        
+        # Colors for each model
+        colors = {
+            'cnn': '#3B82F6',
+            'lstm': '#10B981',
+            'gru': '#8B5CF6'
+        }
+        
+        for model_name, results in self.model_results.items():
+            values = [
+                results.get('accuracy', 0),
+                results.get('precision', 0),
+                results.get('recall', 0),
+                results.get('f1_score', 0)
+            ]
+            
+            # Add model trace
+            fig.add_trace(go.Scatterpolar(
+                r=values + [values[0]],  # Close the polygon
+                theta=metrics + [metrics[0]],
+                name=model_name.upper(),
+                fill='toself',
+                line_color=colors.get(model_name, '#94a3b8'),
+                opacity=0.7
+            ))
+        
+        fig.update_layout(
+            polar=dict(
+                radialaxis=dict(
+                    visible=True,
+                    range=[0, 1]
+                )),
+            showlegend=True,
+            title="Model Performance Radar Chart",
+            height=500,
+            template="plotly_white"
+        )
+        
+        return fig
 
 def main():
     st.markdown("""
     <div class="hero-container">
-        <h1 class="hero-title">🤖 QR Code Security Analyzer</h1>
+        <h1 class="hero-title">📊 QR Code Model Results Viewer</h1>
         <p class="hero-subtitle">
-            Combine CNN (Offline Results) with LSTM & GRU Training
+            Upload and visualize CNN, LSTM, and GRU model results without training
         </p>
     </div>
     """, unsafe_allow_html=True)
-
-    processor = DatasetProcessor()
-    trainer = CompleteModelTrainer()
-
+    
+    analyzer = ModelResultsAnalyzer()
+    
     with st.sidebar:
-        st.header("📁 Dataset Configuration")
-        
-        uploaded_file = st.file_uploader(
-            "Upload dataset ZIP",
-            type=['zip'],
-            help="Must contain 'benign' and 'malicious' folders"
-        )
-        
-        if uploaded_file:
-            with st.spinner("Processing dataset..."):
-                dataset_info = processor.process_zip_file(uploaded_file)
-                if dataset_info and dataset_info['total_images'] > 0:
-                    st.success(f"✅ {dataset_info['total_images']} images loaded")
-                    st.session_state['dataset_info'] = dataset_info
-                else:
-                    st.error("❌ Invalid dataset")
-        
-        st.markdown("---")
-        st.header("🎯 Model Configuration")
+        st.header("📤 Upload Model Results")
         
         st.markdown('<div class="upload-section">', unsafe_allow_html=True)
-        st.subheader("📊 CNN Offline Results")
         
-        cnn_eval_file = st.file_uploader(
+        # Upload untuk setiap model
+        st.subheader("🖼️ CNN Results")
+        cnn_eval = st.file_uploader(
             "Upload cnn_eval.json",
             type=["json"],
-            help="Upload JSON file with CNN evaluation results"
+            key="cnn_eval"
+        )
+        cnn_history = st.file_uploader(
+            "Upload cnn_history.json (optional)",
+            type=["json"],
+            key="cnn_history"
         )
         
-        cnn_history_file = st.file_uploader(
-            "Upload cnn_history.json",
+        st.markdown("---")
+        st.subheader("📝 LSTM Results")
+        lstm_eval = st.file_uploader(
+            "Upload lstm_eval.json",
             type=["json"],
-            help="Upload JSON file with CNN training history"
+            key="lstm_eval"
+        )
+        lstm_history = st.file_uploader(
+            "Upload lstm_history.json (optional)",
+            type=["json"],
+            key="lstm_history"
+        )
+        
+        st.markdown("---")
+        st.subheader("🌀 GRU Results")
+        gru_eval = st.file_uploader(
+            "Upload gru_eval.json",
+            type=["json"],
+            key="gru_eval"
+        )
+        gru_history = st.file_uploader(
+            "Upload gru_history.json (optional)",
+            type=["json"],
+            key="gru_history"
         )
         
         st.markdown('</div>', unsafe_allow_html=True)
         
-        st.subheader("🤖 Models to Train")
-        selected_models = st.multiselect(
-            "Select models to train:",
-            ["LSTM", "GRU"],
-            default=["LSTM", "GRU"],
-            help="CNN results will be loaded from uploaded JSON files"
-        )
-        
         st.markdown("---")
-        st.header("⚙️ Training Parameters")
-        if not QR_DECODER_AVAILABLE:
-            st.warning("⚠️ QR decoder (`pyzbar`) tidak tersedia. Synthetic text dinonaktifkan untuk mencegah data leakage.")
-            use_synthetic = False
-        else:
-            use_synthetic = st.checkbox("Use Synthetic Text Data", value=False,
-                                        help="Generate synthetic QR text if decoding fails. Hanya aktif jika pyzbar tersedia.")
-            use_synthetic = st.checkbox("Use Synthetic Text Data", value=True,
-                                            help="Generate synthetic QR text if decoding fails")
+        st.header("⚙️ Settings")
         
-        epochs = st.slider("Training Epochs", 5, 30, 10,
-                          help="Number of training epochs for LSTM/GRU")
+        show_history = st.checkbox("Show Training History", value=True,
+                                  help="Display training history plots if available")
         
-        batch_size = st.slider("Batch Size", 16, 64, 32,
-                              help="Batch size for LSTM/GRU training")
+        auto_validate = st.checkbox("Auto-Validate Metrics", value=True,
+                                   help="Check for suspicious metrics (all 1.0 or 0.0)")
         
-        # Advanced options
-        with st.expander("⚙️ Advanced Options"):
-            enable_debug = st.checkbox("Enable Debug Mode", value=True,
-                                      help="Show detailed debug information")
-            validation_split = st.slider("Validation Split", 0.1, 0.3, 0.2,
-                                        help="Percentage of data for validation")
-        
-        if st.button("🚀 Start Training & Analysis", type="primary", use_container_width=True):
-            if 'dataset_info' not in st.session_state:
-                st.warning("Please upload dataset first!")
-            elif not cnn_eval_file or not cnn_history_file:
-                st.warning("Please upload both CNN JSON files!")
+        if st.button("🚀 Load & Analyze Results", type="primary", use_container_width=True):
+            # Reset previous results
+            analyzer.model_results = {}
+            analyzer.model_histories = {}
+            
+            # Load CNN results
+            if cnn_eval:
+                with st.spinner("Loading CNN results..."):
+                    if analyzer.load_model_results('cnn', cnn_eval, cnn_history):
+                        st.session_state['cnn_loaded'] = True
+                        if auto_validate:
+                            analyzer.validate_metrics(analyzer.model_results.get('cnn', {}))
+            
+            # Load LSTM results
+            if lstm_eval:
+                with st.spinner("Loading LSTM results..."):
+                    if analyzer.load_model_results('lstm', lstm_eval, lstm_history):
+                        st.session_state['lstm_loaded'] = True
+                        if auto_validate:
+                            analyzer.validate_metrics(analyzer.model_results.get('lstm', {}))
+            
+            # Load GRU results
+            if gru_eval:
+                with st.spinner("Loading GRU results..."):
+                    if analyzer.load_model_results('gru', gru_eval, gru_history):
+                        st.session_state['gru_loaded'] = True
+                        if auto_validate:
+                            analyzer.validate_metrics(analyzer.model_results.get('gru', {}))
+            
+            if analyzer.model_results:
+                st.session_state['analyzer'] = analyzer
+                st.session_state['results_loaded'] = True
+                st.success(f"✅ Loaded {len(analyzer.model_results)} model(s)")
             else:
-                st.session_state['selected_models'] = selected_models
-                st.session_state['cnn_eval_file'] = cnn_eval_file
-                st.session_state['cnn_history_file'] = cnn_history_file
-                st.session_state['training_params'] = {
-                    'epochs': epochs,
-                    'batch_size': batch_size,
-                    'use_synthetic': use_synthetic,
-                    'enable_debug': enable_debug,
-                    'validation_split': validation_split
-                }
-                st.session_state['start_training'] = True
+                st.error("❌ No valid model results loaded")
         
         st.markdown("---")
-        if st.button("🔄 Reset Application", use_container_width=True):
-            st.cache_data.clear()
-            st.cache_resource.clear()
+        if st.button("🔄 Reset All", use_container_width=True):
             st.session_state.clear()
             st.rerun()
-
+        
+        st.markdown("---")
+        st.header("ℹ️ How to Use")
+        with st.expander("Instructions"):
+            st.markdown("""
+            1. **Upload JSON Files** for each model:
+               - `*_eval.json`: Contains accuracy, precision, recall, f1_score
+               - `*_history.json` (optional): Contains training history
+            
+            2. **Click 'Load & Analyze Results'**
+            
+            3. **View results** in the main tabs
+            
+            **Required format for *_eval.json:**
+            ```json
+            {
+                "accuracy": 0.95,
+                "precision": 0.94,
+                "recall": 0.93,
+                "f1_score": 0.935
+            }
+            ```
+            
+            **Optional format for *_history.json:**
+            ```json
+            {
+                "accuracy": [0.85, 0.90, 0.92, 0.94, 0.95],
+                "val_accuracy": [0.82, 0.87, 0.90, 0.92, 0.93],
+                "loss": [0.45, 0.30, 0.22, 0.18, 0.15],
+                "val_loss": [0.48, 0.32, 0.25, 0.20, 0.17]
+            }
+            ```
+            """)
+    
     # Main content tabs
-    tab1, tab2, tab3, tab4 = st.tabs(["📊 Dataset", "🤖 Training", "📈 Results", "💾 Download"])
-
-    # --- TAB 1: Dataset ---
+    tab1, tab2, tab3, tab4 = st.tabs(["📊 Model Results", "📈 Comparison", "🏆 Best Model", "💾 Download"])
+    
+    # --- TAB 1: Model Results ---
     with tab1:
-        st.header("📊 Dataset Information")
+        st.header("📊 Individual Model Results")
         
-        if 'dataset_info' in st.session_state:
-            dataset_info = st.session_state['dataset_info']
+        if st.session_state.get('results_loaded') and 'analyzer' in st.session_state:
+            analyzer = st.session_state['analyzer']
             
-            # Dataset metrics
-            col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                st.metric("Total Images", dataset_info['total_images'])
-            with col2:
-                st.metric("Benign Images", dataset_info['benign_count'])
-            with col3:
-                st.metric("Malicious Images", dataset_info['malicious_count'])
-            with col4:
-                ratio = dataset_info['benign_count'] / dataset_info['total_images'] * 100 if dataset_info['total_images'] > 0 else 0
-                st.metric("Benign Ratio", f"{ratio:.1f}%")
-            
-            # Sample images
-            if dataset_info['benign_samples']:
-                st.subheader("✅ Benign QR Samples")
-                cols = st.columns(min(5, len(dataset_info['benign_samples'])))
-                for idx, img_path in enumerate(dataset_info['benign_samples']):
-                    with cols[idx]:
-                        try:
-                            img = Image.open(img_path)
-                            img.thumbnail((150, 150))
-                            st.image(img, caption=f"Sample {idx+1}", use_container_width=True)
-                        except:
-                            st.warning(f"Could not load image {idx+1}")
-            
-            if dataset_info['malicious_samples']:
-                st.subheader("❌ Malicious QR Samples")
-                cols = st.columns(min(5, len(dataset_info['malicious_samples'])))
-                for idx, img_path in enumerate(dataset_info['malicious_samples']):
-                    with cols[idx]:
-                        try:
-                            img = Image.open(img_path)
-                            img.thumbnail((150, 150))
-                            st.image(img, caption=f"Sample {idx+1}", use_container_width=True)
-                        except:
-                            st.warning(f"Could not load image {idx+1}")
-        else:
-            st.info("👈 Please upload dataset ZIP file in the sidebar")
-
-    # --- TAB 2: Training ---
-    with tab2:
-        st.header("🤖 Model Training & Analysis")
-        
-        if 'start_training' in st.session_state and st.session_state['start_training']:
-            if 'dataset_info' not in st.session_state:
-                st.error("Dataset not found. Please upload dataset first.")
-                return
-            
-            dataset_info = st.session_state['dataset_info']
-            selected_models = st.session_state.get('selected_models', [])
-            params = st.session_state.get('training_params', {})
-            cnn_eval_file = st.session_state.get('cnn_eval_file')
-            cnn_history_file = st.session_state.get('cnn_history_file')
-            
-            # Step 1: Load CNN results
-            st.markdown("### Step 1: Loading CNN Offline Results")
-            st.markdown('<div class="training-card cnn-card">', unsafe_allow_html=True)
-            
-            with st.spinner("Loading CNN results from JSON files..."):
-                if trainer.load_cnn_offline_results(cnn_eval_file, cnn_history_file):
-                    st.success("✅ CNN results loaded successfully!")
-                    trainer.display_cnn_results()
-                else:
-                    st.error("❌ Failed to load CNN results")
-                    st.stop()
-            
+            # Display loaded models
+            st.markdown('<div class="info-box">', unsafe_allow_html=True)
+            st.write(f"**Loaded Models:** {', '.join([m.upper() for m in analyzer.model_results.keys()])}")
             st.markdown('</div>', unsafe_allow_html=True)
             
-            # Step 2: Prepare training data
-            st.markdown("### Step 2: Preparing Training Data")
-            with st.spinner("Preparing training data for LSTM/GRU..."):
-                try:
-                    training_data = processor.prepare_training_data(
-                        dataset_info,
-                        use_synthetic=params['use_synthetic']
-                    )
-                    
-                    
-                    if training_data is None:
-                        st.error("❌ Failed to prepare training data")
-                        st.stop()
-                    
-                    st.success(f"✅ Prepared {training_data['total_samples']} samples")
-                    
-                    # Tampilkan info penting untuk debugging
-                    st.markdown('<div class="warning-box">', unsafe_allow_html=True)
-                    st.write("**Training Data Summary:**")
-                    st.write(f"- Total vocabulary size: {training_data['vocab_size']}")
-                    st.write(f"- Train samples: {len(training_data['X_train_seq'])}")
-                    st.write(f"- Test samples: {len(training_data['X_test_seq'])}")
-                    st.write(f"- Label distribution (train): benign={sum(training_data['y_train_txt']==0)}, malicious={sum(training_data['y_train_txt']==1)}")
-                    st.markdown('</div>', unsafe_allow_html=True)
-                    
-                except Exception as e:
-                    st.error(f"❌ Error preparing training data: {e}")
-                    import traceback
-                    st.error(traceback.format_exc())
-                    st.stop()
+            # Display each model's results
+            if 'cnn' in analyzer.model_results:
+                analyzer.display_model_card('cnn', analyzer.model_results['cnn'])
             
-            # Step 3: Train selected models
-            st.markdown("### Step 3: Training Selected Models")
+            if 'lstm' in analyzer.model_results:
+                analyzer.display_model_card('lstm', analyzer.model_results['lstm'])
             
-            # Cek apakah ada text data yang valid
-            if training_data['vocab_size'] <= 10:
-                st.warning("⚠️ Warning: Vocabulary size sangat kecil. Model mungkin tidak belajar dengan baik.")
+            if 'gru' in analyzer.model_results:
+                analyzer.display_model_card('gru', analyzer.model_results['gru'])
             
-            if "LSTM" in selected_models:
-                st.markdown("---")
-                trainer.train_lstm(training_data, 
-                                 epochs=params['epochs'], 
-                                 batch_size=params['batch_size'])
-            
-            if "GRU" in selected_models:
-                st.markdown("---")
-                trainer.train_gru(training_data, 
-                                epochs=params['epochs'], 
-                                batch_size=params['batch_size'])
-            
-            # Mark training complete
-            if trainer.results:
-                st.session_state['training_complete'] = True
-                st.session_state['trainer'] = trainer
+            # Summary statistics
+            if len(analyzer.model_results) > 0:
+                st.markdown("### 📈 Summary Statistics")
                 
-                # Cleanup temp directory
-                if 'temp_dir' in dataset_info:
-                    try:
-                        shutil.rmtree(dataset_info['temp_dir'], ignore_errors=True)
-                    except:
-                        pass
-            
-            # Reset training flag
-            st.session_state['start_training'] = False
-            
+                summary_data = []
+                for model_name, results in analyzer.model_results.items():
+                    summary_data.append({
+                        'Model': model_name.upper(),
+                        'Accuracy': f"{results.get('accuracy', 0):.4f}",
+                        'Precision': f"{results.get('precision', 0):.4f}",
+                        'Recall': f"{results.get('recall', 0):.4f}",
+                        'F1-Score': f"{results.get('f1_score', 0):.4f}"
+                    })
+                
+                df_summary = pd.DataFrame(summary_data)
+                st.dataframe(df_summary, use_container_width=True)
+                
         else:
-            st.info("👈 Configure models and click 'Start Training & Analysis' in the sidebar")
-
-    # --- TAB 3: Results ---
-    with tab3:
-        st.header("📈 Model Comparison & Analysis")
+            st.info("👈 Please upload model results in the sidebar and click 'Load & Analyze Results'")
+    
+    # --- TAB 2: Comparison ---
+    with tab2:
+        st.header("📈 Model Comparison Analysis")
         
-        if st.session_state.get('training_complete'):
-            trainer = st.session_state.get('trainer')
+        if st.session_state.get('results_loaded') and 'analyzer' in st.session_state:
+            analyzer = st.session_state['analyzer']
             
-            if trainer and trainer.results:
-                # Best model banner
-                best_model_name, best_model_results = trainer.get_best_model()
-                if best_model_name and best_model_results:
-                    st.markdown(f"""
-                    <div class="best-model-banner">
-                        <h3 style="margin:0 0 1rem 0;">🏆 Best Model: {best_model_name.upper()}</h3>
-                        <div style="display: flex; justify-content: center; gap: 2rem; margin-top: 1rem;">
-                            <div style="text-align: center;">
-                                <div style="font-size: 0.9rem; color: #64748b;">Accuracy</div>
-                                <div style="font-size: 1.8rem; font-weight: 700; color: #10b981;">
-                                    {best_model_results['accuracy']:.4f}
-                                </div>
-                            </div>
-                            <div style="text-align: center;">
-                                <div style="font-size: 0.9rem; color: #64748b;">F1-Score</div>
-                                <div style="font-size: 1.8rem; font-weight: 700; color: #10b981;">
-                                    {best_model_results['f1_score']:.4f}
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                    """, unsafe_allow_html=True)
-                
+            if len(analyzer.model_results) >= 2:
                 # Comparison table
-                st.subheader("📊 Model Performance Comparison")
-                comparison_df = trainer.compare_models()
+                st.subheader("📊 Performance Comparison Table")
+                comparison_df = analyzer.create_comparison_table()
                 if comparison_df is not None:
                     # Style the dataframe
-                    styled_df = comparison_df.copy()
-                    styled_df = styled_df.round(4)
-                    
-                    # Color code based on values
-                    def color_cells(val):
+                    def highlight_cells(val):
                         if isinstance(val, (int, float)):
                             if val >= 0.9:
                                 return 'background-color: #dcfce7; color: #166534;'
@@ -1491,141 +808,290 @@ def main():
                                 return 'background-color: #fee2e2; color: #991b1b;'
                         return ''
                     
-                    # Apply styling
-                    numeric_cols = ['Accuracy', 'Precision', 'Recall', 'F1-Score']
-                    styled_df = styled_df.style.applymap(color_cells, subset=numeric_cols)
-                    
+                    styled_df = comparison_df.style.applymap(highlight_cells, 
+                                                           subset=['Accuracy', 'Precision', 'Recall', 'F1-Score'])
                     st.dataframe(styled_df, use_container_width=True)
                 
-                # Visual comparison
-                st.subheader("📈 Performance Visualization")
-                if trainer.results:
-                    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-                    models = list(trainer.results.keys())
-                    
-                    # Define colors for each model
-                    colors = {
-                        'cnn': '#3B82F6',  # Blue
-                        'lstm': '#10B981',  # Green
-                        'gru': '#8B5CF6'    # Purple
-                    }
-                    
-                    metrics_to_plot = [
-                        ('Accuracy', 'accuracy'),
-                        ('Precision', 'precision'),
-                        ('Recall', 'recall'),
-                        ('F1-Score', 'f1_score')
-                    ]
-                    
-                    for idx, (title, metric_key) in enumerate(metrics_to_plot):
-                        ax = axes[idx // 2, idx % 2]
-                        values = [trainer.results[m].get(metric_key, 0) for m in models]
-                        bar_colors = [colors.get(m, '#94a3b8') for m in models]
-                        bars = ax.bar(models, values, color=bar_colors, edgecolor='black')
-                        
-                        ax.set_title(title, fontsize=14, fontweight='bold')
-                        ax.set_ylabel('Score', fontsize=12)
-                        ax.set_ylim([0, 1])
-                        
-                        # Add threshold lines
-                        ax.axhline(y=0.9, color='#10b981', linestyle='--', alpha=0.3, label='Excellent')
-                        ax.axhline(y=0.8, color='#f59e0b', linestyle='--', alpha=0.3, label='Good')
-                        ax.axhline(y=0.7, color='#ef4444', linestyle='--', alpha=0.3, label='Poor')
-                        
-                        # Add value labels on bars
-                        for bar in bars:
-                            height = bar.get_height()
-                            ax.text(bar.get_x() + bar.get_width()/2., height,
-                                   f'{height:.3f}', ha='center', va='bottom',
-                                   fontweight='bold')
-                        
-                        ax.grid(True, alpha=0.2)
-                        if idx == 3:  # Only add legend to last plot
-                            ax.legend(loc='upper right')
-                    
-                    plt.tight_layout()
-                    st.pyplot(fig)
-                    
+                # Bar chart comparison
+                st.subheader("📊 Bar Chart Comparison")
+                fig_bar = analyzer.plot_comparison_chart()
+                if fig_bar:
+                    st.plotly_chart(fig_bar, use_container_width=True)
+                
+                # Radar chart
+                st.subheader("🎯 Radar Chart Comparison")
+                fig_radar = analyzer.radar_chart()
+                if fig_radar:
+                    st.plotly_chart(fig_radar, use_container_width=True)
+                
+                # Statistical analysis
+                st.subheader("📊 Statistical Analysis")
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    if len(analyzer.model_results) > 0:
+                        avg_accuracy = np.mean([r.get('accuracy', 0) for r in analyzer.model_results.values()])
+                        st.metric("Average Accuracy", f"{avg_accuracy:.4f}")
+                
+                with col2:
+                    if len(analyzer.model_results) > 0:
+                        avg_f1 = np.mean([r.get('f1_score', 0) for r in analyzer.model_results.values()])
+                        st.metric("Average F1-Score", f"{avg_f1:.4f}")
+                
+                with col3:
+                    if len(analyzer.model_results) > 0:
+                        std_accuracy = np.std([r.get('accuracy', 0) for r in analyzer.model_results.values()])
+                        st.metric("Std Dev Accuracy", f"{std_accuracy:.4f}")
+                
             else:
-                st.info("No training results available yet.")
+                st.warning("⚠️ Need at least 2 models for comparison")
+                if len(analyzer.model_results) == 1:
+                    model_name = list(analyzer.model_results.keys())[0]
+                    st.info(f"Only {model_name.upper()} loaded. Upload more models for comparison.")
         else:
-            st.info("Complete training to see results here.")
-
-    # --- TAB 4: Download ---
-    with tab4:
-        st.header("💾 Download Results & Models")
+            st.info("👈 Please upload at least 2 model results for comparison")
+    
+    # --- TAB 3: Best Model ---
+    with tab3:
+        st.header("🏆 Best Model Analysis")
         
-        if st.session_state.get('training_complete'):
-            trainer = st.session_state.get('trainer')
+        if st.session_state.get('results_loaded') and 'analyzer' in st.session_state:
+            analyzer = st.session_state['analyzer']
             
-            if trainer:
-                # Save trained models
-                os.makedirs('models', exist_ok=True)
-                saved_files = {}
+            if len(analyzer.model_results) > 0:
+                # Determine best model
+                best_model_name, best_f1 = analyzer.determine_best_model()
                 
-                # Save LSTM and GRU models
-                for model_name, model in trainer.models.items():
-                    if model_name in ['lstm', 'gru']:
-                        filename = f"models/{model_name}_model.h5"
-                        model.save(filename)
-                        saved_files[model_name] = filename
-                
-                # Download trained models
-                st.subheader("📥 Download Trained Models")
-                if saved_files:
-                    cols = st.columns(len(saved_files))
-                    for idx, (model_name, filepath) in enumerate(saved_files.items()):
-                        with cols[idx]:
-                            model_display_name = model_name.upper()
-                            with open(filepath, 'rb') as f:
-                                st.download_button(
-                                    label=f"Download {model_display_name}",
-                                    data=f.read(),
-                                    file_name=f"{model_name}_model.h5",
-                                    mime="application/octet-stream",
-                                    use_container_width=True
-                                )
-                else:
-                    st.info("No models available for download.")
-                
-                # Download results
-                st.subheader("📊 Download Results")
-                if trainer.results:
-                    # Create comparison CSV
-                    comparison_df = trainer.compare_models()
-                    csv = comparison_df.to_csv(index=False)
+                if best_model_name:
+                    best_results = analyzer.model_results[best_model_name]
                     
-                    col1, col2 = st.columns(2)
+                    # Best model banner
+                    st.markdown(f"""
+                    <div class="best-model-banner">
+                        <h3 style="margin:0 0 1rem 0;">🏆 Best Performing Model: {best_model_name.upper()}</h3>
+                        <div style="display: flex; justify-content: center; gap: 2rem; margin-top: 1rem;">
+                            <div style="text-align: center;">
+                                <div style="font-size: 0.9rem; color: #64748b;">F1-Score</div>
+                                <div style="font-size: 2rem; font-weight: 700; color: #10b981;">
+                                    {best_f1:.4f}
+                                </div>
+                            </div>
+                            <div style="text-align: center;">
+                                <div style="font-size: 0.9rem; color: #64748b;">Accuracy</div>
+                                <div style="font-size: 2rem; font-weight: 700; color: #10b981;">
+                                    {best_results.get('accuracy', 0):.4f}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+                    # Best model details
+                    st.subheader(f"📊 {best_model_name.upper()} Detailed Metrics")
+                    
+                    col1, col2 = st.columns([2, 1])
                     
                     with col1:
-                        st.download_button(
-                            label="📄 Download Results CSV",
-                            data=csv,
-                            file_name="model_comparison.csv",
-                            mime="text/csv",
-                            use_container_width=True
+                        # Metrics gauge chart
+                        fig = go.Figure()
+                        
+                        metrics = ['Accuracy', 'Precision', 'Recall', 'F1-Score']
+                        values = [
+                            best_results.get('accuracy', 0),
+                            best_results.get('precision', 0),
+                            best_results.get('recall', 0),
+                            best_results.get('f1_score', 0)
+                        ]
+                        
+                        colors = ['#10b981' if v >= 0.8 else '#f59e0b' if v >= 0.7 else '#ef4444' for v in values]
+                        
+                        fig.add_trace(go.Bar(
+                            x=values,
+                            y=metrics,
+                            orientation='h',
+                            marker_color=colors,
+                            text=[f'{v:.3f}' for v in values],
+                            textposition='auto',
+                        ))
+                        
+                        fig.update_layout(
+                            title=f"{best_model_name.upper()} Performance Metrics",
+                            xaxis=dict(range=[0, 1]),
+                            height=300,
+                            showlegend=False,
+                            template="plotly_white"
                         )
+                        
+                        st.plotly_chart(fig, use_container_width=True)
                     
                     with col2:
-                        # Create JSON summary
-                        summary = {
-                            'best_model': trainer.get_best_model()[0],
-                            'results': trainer.results,
-                            'timestamp': time.strftime("%Y-%m-%d %H:%M:%S")
+                        # Quick stats
+                        st.markdown("### 📈 Quick Stats")
+                        
+                        st.metric("Precision", f"{best_results.get('precision', 0):.4f}")
+                        st.metric("Recall", f"{best_results.get('recall', 0):.4f}")
+                        
+                        # Calculate improvement if multiple models
+                        if len(analyzer.model_results) > 1:
+                            other_f1 = [r.get('f1_score', 0) for n, r in analyzer.model_results.items() 
+                                      if n != best_model_name]
+                            if other_f1:
+                                avg_other_f1 = np.mean(other_f1)
+                                improvement = ((best_f1 - avg_other_f1) / avg_other_f1) * 100
+                                st.metric("Improvement vs Others", f"{improvement:.1f}%")
+                    
+                    # Model recommendations
+                    st.subheader("💡 Recommendations")
+                    
+                    recommendations = []
+                    if best_results.get('precision', 0) < 0.8:
+                        recommendations.append("Improve precision to reduce false positives")
+                    if best_results.get('recall', 0) < 0.8:
+                        recommendations.append("Improve recall to reduce false negatives")
+                    if best_f1 < 0.8:
+                        recommendations.append("Overall model performance needs improvement")
+                    
+                    if recommendations:
+                        st.markdown('<div class="warning-box">', unsafe_allow_html=True)
+                        st.write("**Areas for Improvement:**")
+                        for rec in recommendations:
+                            st.write(f"- {rec}")
+                        st.markdown('</div>', unsafe_allow_html=True)
+                    else:
+                        st.markdown('<div class="success-box">', unsafe_allow_html=True)
+                        st.write("✅ Excellent model performance across all metrics!")
+                        st.markdown('</div>', unsafe_allow_html=True)
+                    
+            else:
+                st.info("No model results available")
+        else:
+            st.info("👈 Please load model results first")
+    
+    # --- TAB 4: Download ---
+    with tab4:
+        st.header("💾 Download Analysis Results")
+        
+        if st.session_state.get('results_loaded') and 'analyzer' in st.session_state:
+            analyzer = st.session_state['analyzer']
+            
+            if len(analyzer.model_results) > 0:
+                # Create comprehensive report
+                st.subheader("📄 Generate Report")
+                
+                report_format = st.selectbox(
+                    "Select Report Format:",
+                    ["JSON", "CSV", "HTML", "PDF (Not supported)"]
+                )
+                
+                if st.button("📥 Generate Comprehensive Report", use_container_width=True):
+                    with st.spinner("Generating report..."):
+                        # Create report data
+                        report_data = {
+                            'analysis_timestamp': time.strftime("%Y-%m-%d %H:%M:%S"),
+                            'models_analyzed': list(analyzer.model_results.keys()),
+                            'model_results': analyzer.model_results,
+                            'best_model': analyzer.determine_best_model()[0],
+                            'summary_statistics': {}
                         }
-                        json_data = json.dumps(summary, indent=2)
+                        
+                        # Add summary statistics
+                        if len(analyzer.model_results) > 0:
+                            for metric in ['accuracy', 'precision', 'recall', 'f1_score']:
+                                values = [r.get(metric, 0) for r in analyzer.model_results.values()]
+                                report_data['summary_statistics'][metric] = {
+                                    'mean': np.mean(values),
+                                    'std': np.std(values),
+                                    'min': np.min(values),
+                                    'max': np.max(values)
+                                }
+                        
+                        if report_format == "JSON":
+                            json_data = json.dumps(report_data, indent=2)
+                            st.download_button(
+                                label="📥 Download JSON Report",
+                                data=json_data,
+                                file_name=f"model_analysis_{time.strftime('%Y%m%d_%H%M%S')}.json",
+                                mime="application/json",
+                                use_container_width=True
+                            )
+                        
+                        elif report_format == "CSV":
+                            # Create comparison CSV
+                            comparison_df = analyzer.create_comparison_table()
+                            csv_data = comparison_df.to_csv(index=False)
+                            st.download_button(
+                                label="📥 Download CSV Report",
+                                data=csv_data,
+                                file_name=f"model_comparison_{time.strftime('%Y%m%d_%H%M%S')}.csv",
+                                mime="text/csv",
+                                use_container_width=True
+                            )
+                
+                # Individual model exports
+                st.subheader("📊 Export Individual Model Results")
+                
+                col1, col2, col3 = st.columns(3)
+                
+                export_models = []
+                if 'cnn' in analyzer.model_results:
+                    export_models.append(('cnn', '🖼️ CNN'))
+                if 'lstm' in analyzer.model_results:
+                    export_models.append(('lstm', '📝 LSTM'))
+                if 'gru' in analyzer.model_results:
+                    export_models.append(('gru', '🌀 GRU'))
+                
+                for idx, (model_name, display_name) in enumerate(export_models):
+                    with [col1, col2, col3][idx % 3]:
+                        results = analyzer.model_results[model_name]
+                        json_str = json.dumps(results, indent=2)
                         
                         st.download_button(
-                            label="📋 Download Summary JSON",
-                            data=json_data,
-                            file_name="training_summary.json",
+                            label=f"Download {display_name}",
+                            data=json_str,
+                            file_name=f"{model_name}_results.json",
                             mime="application/json",
                             use_container_width=True
                         )
+                
+                # Summary download
+                st.subheader("📋 Quick Summary")
+                
+                summary_text = f"""
+                Model Analysis Summary
+                Generated: {time.strftime("%Y-%m-%d %H:%M:%S")}
+                
+                Models Analyzed: {', '.join(analyzer.model_results.keys())}
+                
+                Best Model: {analyzer.determine_best_model()[0]}
+                Best F1-Score: {analyzer.determine_best_model()[1]:.4f}
+                
+                {'='*50}
+                
+                Detailed Results:
+                """
+                
+                for model_name, results in analyzer.model_results.items():
+                    summary_text += f"""
+                {model_name.upper()}:
+                  Accuracy:  {results.get('accuracy', 0):.4f}
+                  Precision: {results.get('precision', 0):.4f}
+                  Recall:    {results.get('recall', 0):.4f}
+                  F1-Score:  {results.get('f1_score', 0):.4f}
+                
+                """
+                
+                st.download_button(
+                    label="📝 Download Text Summary",
+                    data=summary_text,
+                    file_name=f"model_summary_{time.strftime('%Y%m%d_%H%M%S')}.txt",
+                    mime="text/plain",
+                    use_container_width=True
+                )
+                
+            else:
+                st.info("No model results to export")
         else:
-            st.info("Complete training to download models and results.")
+            st.info("👈 Please load model results first")
 
 if __name__ == "__main__":
-    os.makedirs('models', exist_ok=True)
-    os.makedirs('results', exist_ok=True)
     main()
