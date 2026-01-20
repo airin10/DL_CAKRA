@@ -1,6 +1,6 @@
 """
-QR Code Security Analyzer - DATASET PREVIEW + MODEL RESULTS ONLY
-[Upload dataset untuk preview, upload model results untuk analisis, NO TRAINING]
+QR Code Security Analyzer - DATASET PREVIEW + MODEL RESULTS
+[Upload dataset untuk preview + Upload model results untuk analisis, NO TRAINING]
 """
 import streamlit as st
 import pandas as pd
@@ -14,15 +14,12 @@ import tempfile
 import shutil
 from PIL import Image
 import matplotlib.pyplot as plt
-import plotly.graph_objects as go
-import plotly.express as px
-from plotly.subplots import make_subplots
 import warnings
 warnings.filterwarnings('ignore')
 
 # === PAGE CONFIG ===
 st.set_page_config(
-    page_title="QR Code Model Results & Dataset Viewer",
+    page_title="QR Code Dataset & Model Results",
     page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -228,18 +225,13 @@ body, .stApp, [class*="css"] {
     margin: 1rem 0;
 }
 
-/* Image Gallery */
-.image-gallery {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-    gap: 1rem;
-    margin: 1rem 0;
-}
+/* Image Container */
 .image-container {
     border-radius: 10px;
     overflow: hidden;
     box-shadow: 0 2px 8px rgba(0,0,0,0.1);
     transition: transform 0.3s ease;
+    margin-bottom: 1rem;
 }
 .image-container:hover {
     transform: translateY(-5px);
@@ -273,6 +265,10 @@ class DatasetPreview:
             if 'malicious' in dirs_lower:
                 idx = dirs_lower.index('malicious')
                 malicious_path = os.path.join(root, dirs[idx])
+            
+            # Break early jika sudah ditemukan
+            if benign_path and malicious_path:
+                break
         
         return benign_path, malicious_path
     
@@ -281,14 +277,27 @@ class DatasetPreview:
         if not folder_path or not os.path.exists(folder_path):
             return 0, []
         
-        image_extensions = ['.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.gif']
+        image_extensions = ['.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.gif', '.webp']
         image_files = []
         
         for filename in os.listdir(folder_path):
             if any(filename.lower().endswith(ext) for ext in image_extensions):
                 image_files.append(os.path.join(folder_path, filename))
         
-        return len(image_files), image_files[:10]  # Ambil 10 sample saja
+        # Ambil maksimal 10 sample untuk preview
+        return len(image_files), image_files[:10]
+    
+    def get_image_info(self, image_path):
+        """Get informasi tentang gambar"""
+        try:
+            img = Image.open(image_path)
+            return {
+                'size': img.size,
+                'mode': img.mode,
+                'format': img.format
+            }
+        except:
+            return None
     
     def process_zip_file(self, uploaded_zip):
         """Process uploaded ZIP file untuk preview saja"""
@@ -296,19 +305,36 @@ class DatasetPreview:
         temp_dir = tempfile.mkdtemp()
         
         try:
+            # Simpan file ZIP
             zip_path = os.path.join(temp_dir, 'uploaded.zip')
             with open(zip_path, 'wb') as f:
                 f.write(uploaded_zip.getvalue())
             
+            # Extract ZIP
             extract_path = os.path.join(temp_dir, 'extracted')
             os.makedirs(extract_path, exist_ok=True)
             
             self.extract_all_files(zip_path, extract_path)
             
+            # Cari folder benign dan malicious
             benign_path, malicious_path = self.find_folders(extract_path)
             
+            # Hitung gambar di setiap folder
             benign_count, benign_samples = self.count_images_in_folder(benign_path)
             malicious_count, malicious_samples = self.count_images_in_folder(malicious_path)
+            
+            # Collect sample image info
+            benign_sample_info = []
+            for img_path in benign_samples[:5]:  # Ambil 5 sample untuk info
+                info = self.get_image_info(img_path)
+                if info:
+                    benign_sample_info.append(info)
+            
+            malicious_sample_info = []
+            for img_path in malicious_samples[:5]:
+                info = self.get_image_info(img_path)
+                if info:
+                    malicious_sample_info.append(info)
             
             dataset_info = {
                 'total_images': benign_count + malicious_count,
@@ -321,13 +347,15 @@ class DatasetPreview:
                 'extract_path': extract_path,
                 'has_benign': benign_count > 0,
                 'has_malicious': malicious_count > 0,
-                'temp_dir': temp_dir
+                'temp_dir': temp_dir,
+                'benign_sample_info': benign_sample_info,
+                'malicious_sample_info': malicious_sample_info
             }
             
             return dataset_info
             
         except Exception as e:
-            st.error(f"Error processing ZIP: {str(e)}")
+            st.error(f"❌ Error processing ZIP: {str(e)}")
             if 'temp_dir' in locals():
                 shutil.rmtree(temp_dir, ignore_errors=True)
             return None
@@ -338,9 +366,13 @@ class DatasetPreview:
         if not dataset_info:
             return
         
+        st.markdown('<div class="info-box">', unsafe_allow_html=True)
+        st.write("**ℹ️ Dataset Preview Only** - Dataset tidak digunakan untuk training, hanya untuk preview.")
+        st.markdown('</div>', unsafe_allow_html=True)
+        
+        # Dataset metrics card
         st.markdown('<div class="dataset-card">', unsafe_allow_html=True)
         
-        # Dataset metrics
         col1, col2, col3, col4 = st.columns(4)
         with col1:
             st.metric("Total Images", dataset_info['total_images'])
@@ -349,123 +381,216 @@ class DatasetPreview:
         with col3:
             st.metric("Malicious Images", dataset_info['malicious_count'])
         with col4:
-            ratio = dataset_info['benign_count'] / dataset_info['total_images'] * 100 if dataset_info['total_images'] > 0 else 0
-            st.metric("Benign Ratio", f"{ratio:.1f}%")
+            if dataset_info['total_images'] > 0:
+                ratio = (dataset_info['benign_count'] / dataset_info['total_images']) * 100
+                st.metric("Benign Ratio", f"{ratio:.1f}%")
+            else:
+                st.metric("Benign Ratio", "0%")
         
         st.markdown('</div>', unsafe_allow_html=True)
         
         # Distribution chart
         if dataset_info['benign_count'] > 0 or dataset_info['malicious_count'] > 0:
-            fig = go.Figure(data=[
-                go.Bar(
-                    name='Benign',
-                    x=['Benign'],
-                    y=[dataset_info['benign_count']],
-                    marker_color='#10b981',
-                    text=[str(dataset_info['benign_count'])],
-                    textposition='auto'
-                ),
-                go.Bar(
-                    name='Malicious',
-                    x=['Malicious'],
-                    y=[dataset_info['malicious_count']],
-                    marker_color='#ef4444',
-                    text=[str(dataset_info['malicious_count'])],
-                    textposition='auto'
-                )
-            ])
+            st.subheader("📊 Dataset Distribution")
             
-            fig.update_layout(
-                title="Dataset Distribution",
-                yaxis_title="Number of Images",
-                height=300,
-                showlegend=True,
-                template="plotly_white"
-            )
+            fig, ax = plt.subplots(figsize=(10, 6))
             
-            st.plotly_chart(fig, use_container_width=True)
+            labels = ['Benign', 'Malicious']
+            counts = [dataset_info['benign_count'], dataset_info['malicious_count']]
+            colors = ['#10b981', '#ef4444']
+            
+            bars = ax.bar(labels, counts, color=colors, edgecolor='black')
+            ax.set_ylabel('Number of Images', fontsize=12)
+            ax.set_title('Dataset Class Distribution', fontsize=14, fontweight='bold')
+            
+            # Add value labels on bars
+            for bar, count in zip(bars, counts):
+                height = bar.get_height()
+                ax.text(bar.get_x() + bar.get_width()/2., height,
+                       f'{count}', ha='center', va='bottom',
+                       fontweight='bold')
+            
+            # Add pie chart
+            fig2, ax2 = plt.subplots(figsize=(8, 8))
+            if dataset_info['total_images'] > 0:
+                ax2.pie(counts, labels=labels, colors=colors, autopct='%1.1f%%',
+                       startangle=90, wedgeprops={'edgecolor': 'black'})
+                ax2.set_title('Dataset Proportion', fontsize=14, fontweight='bold')
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                st.pyplot(fig)
+            with col2:
+                if dataset_info['total_images'] > 0:
+                    st.pyplot(fig2)
+            
+            plt.close('all')
+        
+        # Dataset statistics
+        st.markdown("### 📈 Dataset Statistics")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.write("**📋 File Information:**")
+            st.write(f"- Total files: **{dataset_info['total_images']}**")
+            st.write(f"- Benign files: **{dataset_info['benign_count']}**")
+            st.write(f"- Malicious files: **{dataset_info['malicious_count']}**")
+            
+            if dataset_info['total_images'] > 0:
+                st.write(f"- Balance ratio: **{dataset_info['benign_count']/dataset_info['total_images']:.2%}**")
+            
+            # Image format info jika ada sample
+            if dataset_info['benign_sample_info'] or dataset_info['malicious_sample_info']:
+                st.write("\n**🖼️ Sample Image Formats:**")
+                
+                all_formats = []
+                if dataset_info['benign_sample_info']:
+                    for info in dataset_info['benign_sample_info']:
+                        if info and 'format' in info:
+                            all_formats.append(info['format'])
+                
+                if dataset_info['malicious_sample_info']:
+                    for info in dataset_info['malicious_sample_info']:
+                        if info and 'format' in info:
+                            all_formats.append(info['format'])
+                
+                if all_formats:
+                    unique_formats = set(all_formats)
+                    st.write(f"- Formats found: {', '.join(unique_formats)}")
+        
+        with col2:
+            st.write("**⚖️ Quality Indicators:**")
+            
+            if dataset_info['benign_count'] == 0:
+                st.error("⚠️ **Tidak ada gambar benign**")
+            elif dataset_info['malicious_count'] == 0:
+                st.error("⚠️ **Tidak ada gambar malicious**")
+            elif abs(dataset_info['benign_count'] - dataset_info['malicious_count']) / dataset_info['total_images'] > 0.7:
+                st.warning("⚠️ Dataset sangat tidak seimbang")
+            else:
+                st.success("✅ Dataset cukup seimbang")
+            
+            if dataset_info['total_images'] < 50:
+                st.warning("⚠️ Dataset sangat kecil (<50 samples)")
+            elif dataset_info['total_images'] < 200:
+                st.info("ℹ️ Dataset ukuran sedang (50-200 samples)")
+            elif dataset_info['total_images'] < 1000:
+                st.success("✅ Dataset cukup besar (200-1000 samples)")
+            else:
+                st.success("✅ Dataset sangat besar (>1000 samples)")
         
         # Sample images - Benign
         if dataset_info['benign_samples']:
+            st.markdown("---")
             st.subheader("✅ Benign QR Samples")
             
-            # Create image gallery
+            # Display 5 samples in a row
             cols = st.columns(5)
             for idx, img_path in enumerate(dataset_info['benign_samples'][:5]):
-                with cols[idx % 5]:
+                with cols[idx]:
                     try:
                         img = Image.open(img_path)
                         img.thumbnail((150, 150))
-                        st.image(img, caption=f"Benign {idx+1}", use_container_width=True)
+                        
+                        st.markdown('<div class="image-container">', unsafe_allow_html=True)
+                        st.image(img, caption=f"Benign {idx+1}", width=150)
+                        st.markdown('</div>', unsafe_allow_html=True)
+                        
+                        # File info
+                        file_size = os.path.getsize(img_path) / 1024  # KB
+                        st.caption(f"{os.path.basename(img_path)[:15]}...\n{file_size:.1f} KB")
+                        
                     except Exception as e:
                         st.warning(f"Could not load image {idx+1}")
             
+            # Show more samples in expander
             if len(dataset_info['benign_samples']) > 5:
-                with st.expander(f"Show all {len(dataset_info['benign_samples'])} benign samples"):
-                    cols = st.columns(5)
-                    for idx, img_path in enumerate(dataset_info['benign_samples']):
-                        with cols[idx % 5]:
-                            try:
-                                img = Image.open(img_path)
-                                img.thumbnail((120, 120))
-                                st.image(img, caption=f"B{idx+1}", use_container_width=True)
-                            except:
-                                st.write(f"Image {idx+1}")
+                with st.expander(f"👁️ Show all {len(dataset_info['benign_samples'])} benign samples"):
+                    # Calculate grid layout
+                    num_cols = 5
+                    num_rows = (len(dataset_info['benign_samples']) + num_cols - 1) // num_cols
+                    
+                    for row in range(num_rows):
+                        cols = st.columns(num_cols)
+                        for col in range(num_cols):
+                            idx = row * num_cols + col
+                            if idx < len(dataset_info['benign_samples']):
+                                with cols[col]:
+                                    try:
+                                        img = Image.open(dataset_info['benign_samples'][idx])
+                                        img.thumbnail((120, 120))
+                                        st.image(img, caption=f"B{idx+1}", width=120)
+                                    except:
+                                        st.write(f"Image {idx+1}")
         
         # Sample images - Malicious
         if dataset_info['malicious_samples']:
+            st.markdown("---")
             st.subheader("❌ Malicious QR Samples")
             
+            # Display 5 samples in a row
             cols = st.columns(5)
             for idx, img_path in enumerate(dataset_info['malicious_samples'][:5]):
-                with cols[idx % 5]:
+                with cols[idx]:
                     try:
                         img = Image.open(img_path)
                         img.thumbnail((150, 150))
-                        st.image(img, caption=f"Malicious {idx+1}", use_container_width=True)
+                        
+                        st.markdown('<div class="image-container">', unsafe_allow_html=True)
+                        st.image(img, caption=f"Malicious {idx+1}", width=150)
+                        st.markdown('</div>', unsafe_allow_html=True)
+                        
+                        # File info
+                        file_size = os.path.getsize(img_path) / 1024  # KB
+                        st.caption(f"{os.path.basename(img_path)[:15]}...\n{file_size:.1f} KB")
+                        
                     except Exception as e:
                         st.warning(f"Could not load image {idx+1}")
             
+            # Show more samples in expander
             if len(dataset_info['malicious_samples']) > 5:
-                with st.expander(f"Show all {len(dataset_info['malicious_samples'])} malicious samples"):
-                    cols = st.columns(5)
-                    for idx, img_path in enumerate(dataset_info['malicious_samples']):
-                        with cols[idx % 5]:
-                            try:
-                                img = Image.open(img_path)
-                                img.thumbnail((120, 120))
-                                st.image(img, caption=f"M{idx+1}", use_container_width=True)
-                            except:
-                                st.write(f"Image {idx+1}")
+                with st.expander(f"👁️ Show all {len(dataset_info['malicious_samples'])} malicious samples"):
+                    # Calculate grid layout
+                    num_cols = 5
+                    num_rows = (len(dataset_info['malicious_samples']) + num_cols - 1) // num_cols
+                    
+                    for row in range(num_rows):
+                        cols = st.columns(num_cols)
+                        for col in range(num_cols):
+                            idx = row * num_cols + col
+                            if idx < len(dataset_info['malicious_samples']):
+                                with cols[col]:
+                                    try:
+                                        img = Image.open(dataset_info['malicious_samples'][idx])
+                                        img.thumbnail((120, 120))
+                                        st.image(img, caption=f"M{idx+1}", width=120)
+                                    except:
+                                        st.write(f"Image {idx+1}")
         
-        # Dataset statistics
-        st.markdown("### 📊 Dataset Statistics")
+        # Dataset summary
+        st.markdown("---")
+        st.markdown("### 📝 Dataset Summary")
         
-        if dataset_info['total_images'] > 0:
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.write("**File Information:**")
-                st.write(f"- Total files: {dataset_info['total_images']}")
-                st.write(f"- Benign files: {dataset_info['benign_count']}")
-                st.write(f"- Malicious files: {dataset_info['malicious_count']}")
-                st.write(f"- Balance ratio: {dataset_info['benign_count']/dataset_info['total_images']:.2%}")
-            
-            with col2:
-                st.write("**Quality Indicators:**")
-                if dataset_info['benign_count'] == 0 or dataset_info['malicious_count'] == 0:
-                    st.error("⚠️ Dataset tidak seimbang (satu kelas kosong)")
-                elif abs(dataset_info['benign_count'] - dataset_info['malicious_count']) / dataset_info['total_images'] > 0.7:
-                    st.warning("⚠️ Dataset sangat tidak seimbang")
-                else:
-                    st.success("✅ Dataset cukup seimbang")
-                
-                if dataset_info['total_images'] < 100:
-                    st.warning("⚠️ Dataset sangat kecil (<100 samples)")
-                elif dataset_info['total_images'] < 500:
-                    st.info("ℹ️ Dataset ukuran sedang (100-500 samples)")
-                else:
-                    st.success("✅ Dataset cukup besar (>500 samples)")
+        summary_col1, summary_col2 = st.columns(2)
+        
+        with summary_col1:
+            st.write("**✅ Strengths:**")
+            if dataset_info['total_images'] >= 200:
+                st.write("- Dataset cukup besar untuk training")
+            if dataset_info['benign_count'] > 0 and dataset_info['malicious_count'] > 0:
+                st.write("- Memiliki kedua kelas (benign & malicious)")
+            if dataset_info['total_images'] > 0 and abs(dataset_info['benign_count'] - dataset_info['malicious_count']) / dataset_info['total_images'] <= 0.3:
+                st.write("- Distribusi kelas cukup seimbang")
+        
+        with summary_col2:
+            st.write("**⚠️ Recommendations:**")
+            if dataset_info['total_images'] < 100:
+                st.write("- Tambahkan lebih banyak data")
+            if dataset_info['benign_count'] == 0 or dataset_info['malicious_count'] == 0:
+                st.write("- Tambahkan gambar untuk kelas yang kosong")
+            if dataset_info['total_images'] > 0 and abs(dataset_info['benign_count'] - dataset_info['malicious_count']) / dataset_info['total_images'] > 0.5:
+                st.write("- Seimbangkan distribusi kelas")
 
 class ModelResultsAnalyzer:
     """Class untuk analisis dan visualisasi hasil model"""
@@ -634,84 +759,41 @@ class ModelResultsAnalyzer:
         st.markdown('</div>', unsafe_allow_html=True)
     
     def plot_training_history(self, model_name):
-        """Plot training history menggunakan Plotly"""
+        """Plot training history menggunakan matplotlib"""
         if model_name not in self.model_histories:
             return
         
         history = self.model_histories[model_name]
         
-        # Create subplots
-        fig = make_subplots(
-            rows=1, 
-            cols=2,
-            subplot_titles=(f'{model_name.upper()} Accuracy History', 
-                           f'{model_name.upper()} Loss History')
-        )
+        fig, axes = plt.subplots(1, 2, figsize=(14, 5))
         
         # Accuracy plot
+        ax1 = axes[0]
         if 'accuracy' in history:
-            fig.add_trace(
-                go.Scatter(
-                    y=history['accuracy'],
-                    mode='lines+markers',
-                    name='Training Accuracy',
-                    line=dict(color='#3B82F6', width=2),
-                    marker=dict(size=6)
-                ),
-                row=1, col=1
-            )
-        
+            ax1.plot(history['accuracy'], label='Training', linewidth=2, color='#3B82F6')
         if 'val_accuracy' in history:
-            fig.add_trace(
-                go.Scatter(
-                    y=history['val_accuracy'],
-                    mode='lines+markers',
-                    name='Validation Accuracy',
-                    line=dict(color='#10B981', width=2),
-                    marker=dict(size=6)
-                ),
-                row=1, col=1
-            )
+            ax1.plot(history['val_accuracy'], label='Validation', linewidth=2, color='#10B981')
+        ax1.set_title(f'{model_name.upper()} Accuracy History', fontsize=14, fontweight='bold')
+        ax1.set_xlabel('Epoch', fontsize=12)
+        ax1.set_ylabel('Accuracy', fontsize=12)
+        ax1.legend(loc='best')
+        ax1.grid(True, alpha=0.3)
+        ax1.set_ylim([0, 1])
         
         # Loss plot
+        ax2 = axes[1]
         if 'loss' in history:
-            fig.add_trace(
-                go.Scatter(
-                    y=history['loss'],
-                    mode='lines+markers',
-                    name='Training Loss',
-                    line=dict(color='#EF4444', width=2),
-                    marker=dict(size=6)
-                ),
-                row=1, col=2
-            )
-        
+            ax2.plot(history['loss'], label='Training Loss', linewidth=2, color='#EF4444')
         if 'val_loss' in history:
-            fig.add_trace(
-                go.Scatter(
-                    y=history['val_loss'],
-                    mode='lines+markers',
-                    name='Validation Loss',
-                    line=dict(color='#F59E0B', width=2),
-                    marker=dict(size=6)
-                ),
-                row=1, col=2
-            )
+            ax2.plot(history['val_loss'], label='Validation Loss', linewidth=2, color='#F59E0B')
+        ax2.set_title(f'{model_name.upper()} Loss History', fontsize=14, fontweight='bold')
+        ax2.set_xlabel('Epoch', fontsize=12)
+        ax2.set_ylabel('Loss', fontsize=12)
+        ax2.legend(loc='best')
+        ax2.grid(True, alpha=0.3)
         
-        # Update layout
-        fig.update_layout(
-            height=400,
-            showlegend=True,
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-            template="plotly_white"
-        )
-        
-        fig.update_xaxes(title_text="Epoch", row=1, col=1)
-        fig.update_xaxes(title_text="Epoch", row=1, col=2)
-        fig.update_yaxes(title_text="Accuracy", row=1, col=1, range=[0, 1])
-        fig.update_yaxes(title_text="Loss", row=1, col=2)
-        
-        st.plotly_chart(fig, use_container_width=True)
+        plt.tight_layout()
+        st.pyplot(fig)
     
     def determine_best_model(self):
         """Tentukan model terbaik berdasarkan F1-Score"""
@@ -752,13 +834,13 @@ class ModelResultsAnalyzer:
     def plot_comparison_chart(self):
         """Plot chart perbandingan model"""
         if not self.model_results:
-            return None
+            return
         
         # Prepare data
         metrics = ['Accuracy', 'Precision', 'Recall', 'F1-Score']
         models = list(self.model_results.keys())
         
-        fig = go.Figure()
+        fig, ax = plt.subplots(figsize=(12, 6))
         
         # Colors for each model
         colors = {
@@ -767,8 +849,11 @@ class ModelResultsAnalyzer:
             'gru': '#8B5CF6'
         }
         
+        bar_width = 0.2
+        x = np.arange(len(metrics))
+        
         # Add bars for each model
-        for model in models:
+        for i, model in enumerate(models):
             values = [
                 self.model_results[model].get('accuracy', 0),
                 self.model_results[model].get('precision', 0),
@@ -776,45 +861,39 @@ class ModelResultsAnalyzer:
                 self.model_results[model].get('f1_score', 0)
             ]
             
-            fig.add_trace(go.Bar(
-                name=model.upper(),
-                x=metrics,
-                y=values,
-                marker_color=colors.get(model, '#94a3b8'),
-                text=[f'{v:.3f}' for v in values],
-                textposition='auto',
-            ))
+            ax.bar(x + i * bar_width, values, bar_width, 
+                  label=model.upper(), color=colors.get(model, '#94a3b8'))
+            
+            # Add value labels on bars
+            for j, v in enumerate(values):
+                ax.text(x[j] + i * bar_width, v + 0.01, f'{v:.3f}', 
+                       ha='center', va='bottom', fontsize=9)
         
-        # Update layout
-        fig.update_layout(
-            title="Model Performance Comparison",
-            xaxis_title="Metrics",
-            yaxis_title="Score",
-            yaxis=dict(range=[0, 1]),
-            barmode='group',
-            template="plotly_white",
-            height=500,
-            showlegend=True
-        )
+        ax.set_xlabel('Metrics', fontsize=12)
+        ax.set_ylabel('Score', fontsize=12)
+        ax.set_title('Model Performance Comparison', fontsize=14, fontweight='bold')
+        ax.set_xticks(x + bar_width * (len(models) - 1) / 2)
+        ax.set_xticklabels(metrics)
+        ax.set_ylim([0, 1])
+        ax.legend()
+        ax.grid(True, alpha=0.3)
         
         # Add threshold lines
-        fig.add_hline(y=0.9, line_dash="dash", line_color="#10b981", 
-                     annotation_text="Excellent", annotation_position="right")
-        fig.add_hline(y=0.8, line_dash="dash", line_color="#f59e0b", 
-                     annotation_text="Good", annotation_position="right")
-        fig.add_hline(y=0.7, line_dash="dash", line_color="#ef4444", 
-                     annotation_text="Fair", annotation_position="right")
+        ax.axhline(y=0.9, color='#10b981', linestyle='--', alpha=0.3, label='Excellent')
+        ax.axhline(y=0.8, color='#f59e0b', linestyle='--', alpha=0.3, label='Good')
+        ax.axhline(y=0.7, color='#ef4444', linestyle='--', alpha=0.3, label='Fair')
         
-        return fig
+        plt.tight_layout()
+        st.pyplot(fig)
     
     def radar_chart(self):
         """Create radar chart untuk perbandingan model"""
         if len(self.model_results) < 2:
-            return None
+            return
         
         metrics = ['Accuracy', 'Precision', 'Recall', 'F1-Score']
         
-        fig = go.Figure()
+        fig, ax = plt.subplots(figsize=(8, 8), subplot_kw=dict(projection='polar'))
         
         # Colors for each model
         colors = {
@@ -823,6 +902,11 @@ class ModelResultsAnalyzer:
             'gru': '#8B5CF6'
         }
         
+        # Calculate angles
+        angles = np.linspace(0, 2 * np.pi, len(metrics), endpoint=False).tolist()
+        angles += angles[:1]  # Close the polygon
+        
+        # Plot each model
         for model_name, results in self.model_results.items():
             values = [
                 results.get('accuracy', 0),
@@ -830,35 +914,27 @@ class ModelResultsAnalyzer:
                 results.get('recall', 0),
                 results.get('f1_score', 0)
             ]
+            values += values[:1]  # Close the polygon
             
-            # Add model trace
-            fig.add_trace(go.Scatterpolar(
-                r=values + [values[0]],  # Close the polygon
-                theta=metrics + [metrics[0]],
-                name=model_name.upper(),
-                fill='toself',
-                line_color=colors.get(model_name, '#94a3b8'),
-                opacity=0.7
-            ))
+            ax.plot(angles, values, 'o-', linewidth=2, label=model_name.upper(), 
+                   color=colors.get(model_name, '#94a3b8'))
+            ax.fill(angles, values, alpha=0.1, color=colors.get(model_name, '#94a3b8'))
         
-        fig.update_layout(
-            polar=dict(
-                radialaxis=dict(
-                    visible=True,
-                    range=[0, 1]
-                )),
-            showlegend=True,
-            title="Model Performance Radar Chart",
-            height=500,
-            template="plotly_white"
-        )
+        # Set labels
+        ax.set_xticks(angles[:-1])
+        ax.set_xticklabels(metrics)
+        ax.set_ylim([0, 1])
+        ax.set_title('Model Performance Radar Chart', fontsize=14, fontweight='bold', pad=20)
+        ax.legend(loc='upper right', bbox_to_anchor=(1.3, 1.0))
+        ax.grid(True)
         
-        return fig
+        plt.tight_layout()
+        st.pyplot(fig)
 
 def main():
     st.markdown("""
     <div class="hero-container">
-        <h1 class="hero-title">📊 QR Code Model Results & Dataset Viewer</h1>
+        <h1 class="hero-title">📊 QR Code Dataset & Model Results</h1>
         <p class="hero-subtitle">
             Preview dataset + View model results without training
         </p>
@@ -993,12 +1069,14 @@ def main():
             st.code("""
             dataset.zip/
             ├── benign/
-            │   ├── image1.png
-            │   ├── image2.jpg
+            │   ├── qr1.png
+            │   ├── qr2.jpg
+            │   ├── qr3.jpeg
             │   └── ...
             └── malicious/
-                ├── image1.png
-                ├── image2.jpg
+                ├── malware1.png
+                ├── malware2.jpg
+                ├── malware3.jpeg
                 └── ...
             """)
             
@@ -1050,9 +1128,19 @@ def main():
                 st.rerun()
         else:
             st.info("👈 Upload dataset ZIP in the sidebar to preview")
-            st.image("https://via.placeholder.com/800x400.png?text=Dataset+Preview+Area", 
-                    caption="Upload dataset to see preview here", 
-                    use_container_width=True)
+            
+            # Create a placeholder without external image
+            st.markdown("""
+            <div style="background: linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%); 
+                        border-radius: 10px; 
+                        padding: 3rem; 
+                        text-align: center;
+                        border: 2px dashed #cbd5e1;">
+                <h3 style="color: #3b82f6;">📂 Dataset Preview Area</h3>
+                <p style="color: #64748b;">Upload a dataset ZIP file to see preview here</p>
+                <p style="font-size: 48px;">📊</p>
+            </div>
+            """, unsafe_allow_html=True)
     
     # --- TAB 2: Model Results ---
     with tab2:
@@ -1091,7 +1179,7 @@ def main():
                     })
                 
                 df_summary = pd.DataFrame(summary_data)
-                st.dataframe(df_summary, use_container_width=True)
+                st.dataframe(df_summary, width=800)
                 
                 # Performance analysis
                 st.markdown("### 🎯 Performance Analysis")
@@ -1120,9 +1208,19 @@ def main():
                     st.metric("Average F1-Score", f"{avg_f1:.4f}")
         else:
             st.info("👈 Upload model results in the sidebar and click 'Load Model Results'")
-            st.image("https://via.placeholder.com/800x400.png?text=Model+Results+Area", 
-                    caption="Upload model results to see analysis here", 
-                    use_container_width=True)
+            
+            # Create a placeholder without external image
+            st.markdown("""
+            <div style="background: linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%); 
+                        border-radius: 10px; 
+                        padding: 3rem; 
+                        text-align: center;
+                        border: 2px dashed #cbd5e1;">
+                <h3 style="color: #10b981;">🤖 Model Results Area</h3>
+                <p style="color: #64748b;">Upload model results to see analysis here</p>
+                <p style="font-size: 48px;">📈</p>
+            </div>
+            """, unsafe_allow_html=True)
     
     # --- TAB 3: Comparison ---
     with tab3:
@@ -1149,19 +1247,15 @@ def main():
                     
                     styled_df = comparison_df.style.applymap(highlight_cells, 
                                                            subset=['Accuracy', 'Precision', 'Recall', 'F1-Score'])
-                    st.dataframe(styled_df, use_container_width=True)
+                    st.dataframe(styled_df, width=800)
                 
                 # Bar chart comparison
                 st.subheader("📊 Bar Chart Comparison")
-                fig_bar = analyzer.plot_comparison_chart()
-                if fig_bar:
-                    st.plotly_chart(fig_bar, use_container_width=True)
+                analyzer.plot_comparison_chart()
                 
                 # Radar chart
                 st.subheader("🎯 Radar Chart Comparison")
-                fig_radar = analyzer.radar_chart()
-                if fig_radar:
-                    st.plotly_chart(fig_radar, use_container_width=True)
+                analyzer.radar_chart()
                 
                 # Best model determination
                 st.subheader("🏆 Best Model Analysis")
@@ -1227,7 +1321,7 @@ def main():
                 
                 report_format = st.selectbox(
                     "Select Report Format:",
-                    ["JSON", "CSV", "Text Summary", "HTML Template"]
+                    ["JSON", "CSV", "Text Summary"]
                 )
                 
                 if st.button("📥 Generate Comprehensive Report", use_container_width=True):
@@ -1260,8 +1354,7 @@ def main():
                                 label="📥 Download JSON Report",
                                 data=json_data,
                                 file_name=f"model_analysis_{time.strftime('%Y%m%d_%H%M%S')}.json",
-                                mime="application/json",
-                                use_container_width=True
+                                mime="application/json"
                             )
                         
                         elif report_format == "CSV":
@@ -1272,8 +1365,7 @@ def main():
                                 label="📥 Download CSV Report",
                                 data=csv_data,
                                 file_name=f"model_comparison_{time.strftime('%Y%m%d_%H%M%S')}.csv",
-                                mime="text/csv",
-                                use_container_width=True
+                                mime="text/csv"
                             )
                         
                         elif report_format == "Text Summary":
@@ -1309,8 +1401,7 @@ def main():
                                 label="📥 Download Text Summary",
                                 data=summary_text,
                                 file_name=f"model_summary_{time.strftime('%Y%m%d_%H%M%S')}.txt",
-                                mime="text/plain",
-                                use_container_width=True
+                                mime="text/plain"
                             )
                 
                 # Individual model exports
@@ -1335,8 +1426,7 @@ def main():
                             label=f"Download {display_name}",
                             data=json_str,
                             file_name=f"{model_name}_results.json",
-                            mime="application/json",
-                            use_container_width=True
+                            mime="application/json"
                         )
                 
                 # Quick summary
@@ -1391,8 +1481,7 @@ def main():
                     label="📝 Download Quick Summary",
                     data=summary_text,
                     file_name=f"quick_summary_{time.strftime('%Y%m%d_%H%M%S')}.txt",
-                    mime="text/plain",
-                    use_container_width=True
+                    mime="text/plain"
                 )
                 
             else:
