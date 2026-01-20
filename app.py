@@ -392,46 +392,49 @@ class DatasetProcessor:
         labels = []
         valid_text_count = 0
 
+        # === PERINGATAN KRITIS: Jika pyzbar tidak tersedia, synthetic text = data leakage ===
+        if not QR_DECODER_AVAILABLE and use_synthetic:
+            st.warning("⚠️ **Peringatan Keamanan Data**: `pyzbar` tidak tersedia. "
+                    "Menggunakan synthetic text akan menyebabkan DATA LEAKAGE karena teks dibuat dari label. "
+                    "Sistem secara otomatis menonaktifkan synthetic text.")
+            use_synthetic = False
+
         # Process benign images
         if dataset_info['has_benign'] and dataset_info['benign_path']:
             for filename in os.listdir(dataset_info['benign_path']):
                 if filename.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp')):
                     img_path = os.path.join(dataset_info['benign_path'], filename)
-                    
                     try:
                         img = cv2.imread(img_path)
                         if img is not None:
                             img_resized = cv2.resize(img, self.IMG_SIZE)
                             img_resized = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB)
                             images.append(img_resized)
-                            
-                            # Untuk LSTM/GRU
+                            # Ekstraksi teks QR
                             text_content = self.extract_qr_content_robust(img_path)
                             if text_content:
                                 texts.append(text_content)
                                 valid_text_count += 1
                             elif use_synthetic:
+                                # Hanya boleh dijalankan jika QR_DECODER_AVAILABLE = True
                                 texts.append(self.generate_synthetic_text(0))
                             else:
-                                texts.append("")
-                            
-                            labels.append(0)  # benign
+                                texts.append("")  # teks kosong
+                            labels.append(0)
                     except Exception as e:
                         continue
-        
+
         # Process malicious images
         if dataset_info['has_malicious'] and dataset_info['malicious_path']:
             for filename in os.listdir(dataset_info['malicious_path']):
                 if filename.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp')):
                     img_path = os.path.join(dataset_info['malicious_path'], filename)
-                    
                     try:
                         img = cv2.imread(img_path)
                         if img is not None:
                             img_resized = cv2.resize(img, self.IMG_SIZE)
                             img_resized = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB)
                             images.append(img_resized)
-                            
                             text_content = self.extract_qr_content_robust(img_path)
                             if text_content:
                                 texts.append(text_content)
@@ -440,8 +443,7 @@ class DatasetProcessor:
                                 texts.append(self.generate_synthetic_text(1))
                             else:
                                 texts.append("")
-                            
-                            labels.append(1)  # malicious
+                            labels.append(1)
                     except Exception as e:
                         continue
         
@@ -1246,9 +1248,14 @@ def main():
         
         st.markdown("---")
         st.header("⚙️ Training Parameters")
-        
-        use_synthetic = st.checkbox("Use Synthetic Text Data", value=True,
-                                    help="Generate synthetic QR text if decoding fails")
+        if not QR_DECODER_AVAILABLE:
+            st.warning("⚠️ QR decoder (`pyzbar`) tidak tersedia. Synthetic text dinonaktifkan untuk mencegah data leakage.")
+            use_synthetic = False
+        else:
+            use_synthetic = st.checkbox("Use Synthetic Text Data", value=False,
+                                        help="Generate synthetic QR text if decoding fails. Hanya aktif jika pyzbar tersedia.")
+            use_synthetic = st.checkbox("Use Synthetic Text Data", value=True,
+                                            help="Generate synthetic QR text if decoding fails")
         
         epochs = st.slider("Training Epochs", 5, 30, 10,
                           help="Number of training epochs for LSTM/GRU")
@@ -1374,6 +1381,7 @@ def main():
                         dataset_info,
                         use_synthetic=params['use_synthetic']
                     )
+                    
                     
                     if training_data is None:
                         st.error("❌ Failed to prepare training data")
