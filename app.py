@@ -215,24 +215,6 @@ body, .stApp, [class*="css"] {
 .stProgress > div > div > div {
     background: linear-gradient(90deg, #4f46e5, #7c3aed);
 }
-
-/* Image Grid */
-.image-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
-    gap: 1rem;
-    margin-top: 1rem;
-}
-.image-grid-item {
-    border-radius: 10px;
-    overflow: hidden;
-    border: 2px solid #e5e7eb;
-}
-.image-grid-item:hover {
-    border-color: #4f46e5;
-    transform: scale(1.05);
-    transition: all 0.3s ease;
-}
 </style>
 """, unsafe_allow_html=True)
 
@@ -591,7 +573,6 @@ class CompleteModelTrainer:
         self.models = {}
         self.histories = {}
         self.results = {}
-        self.cnn_model = None
     
     def load_cnn_offline_results(self, eval_file, history_file):
         """Load CNN results dari file JSON"""
@@ -605,7 +586,7 @@ class CompleteModelTrainer:
             cnn_history = json.loads(history_content)
             
             # Ensure all required metrics exist
-            required_metrics = ['accuracy', 'precision', 'recall', 'f1_score', 'auc', 'loss']
+            required_metrics = ['accuracy', 'precision', 'recall', 'f1_score']
             for metric in required_metrics:
                 if metric not in cnn_eval:
                     if metric == 'f1_score':
@@ -615,6 +596,10 @@ class CompleteModelTrainer:
                         cnn_eval['f1_score'] = 2 * (precision * recall) / (precision + recall + 1e-7)
                     else:
                         cnn_eval[metric] = 0
+            
+            # Remove AUC and loss if present
+            cnn_eval.pop('auc', None)
+            cnn_eval.pop('loss', None)
             
             # Simpan hasil
             self.results['cnn'] = cnn_eval
@@ -676,28 +661,6 @@ class CompleteModelTrainer:
             </div>
             """, unsafe_allow_html=True)
         
-        # Additional metrics
-        col5, col6 = st.columns(2)
-        with col5:
-            st.markdown(f"""
-            <div class="metric-card">
-                <div class="metric-label">AUC</div>
-                <div class="metric-value" style="color: {'#10b981' if cnn_eval.get('auc', 0) > 0.8 else '#f59e0b'}">
-                    {cnn_eval.get('auc', 0):.4f}
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-        
-        with col6:
-            st.markdown(f"""
-            <div class="metric-card">
-                <div class="metric-label">Loss</div>
-                <div class="metric-value" style="color: {'#ef4444' if cnn_eval['loss'] > 0.5 else '#10b981'}">
-                    {cnn_eval['loss']:.4f}
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-        
         # Display history plot if available
         if 'cnn' in self.histories:
             self.plot_cnn_history()
@@ -721,12 +684,12 @@ class CompleteModelTrainer:
         ax1.grid(True, alpha=0.3)
         ax1.set_ylim([0, 1])
         
-        # Loss plot
+        # Loss plot (keep for visualization only)
         ax2 = axes[1]
         if 'loss' in history:
-            ax2.plot(history['loss'], label='Training', linewidth=2, color='#3B82F6')
+            ax2.plot(history['loss'], label='Training Loss', linewidth=2, color='#EF4444')
         if 'val_loss' in history:
-            ax2.plot(history['val_loss'], label='Validation', linewidth=2, color='#EF4444')
+            ax2.plot(history['val_loss'], label='Validation Loss', linewidth=2, color='#F59E0B')
         ax2.set_title('CNN Loss History', fontsize=14, fontweight='bold')
         ax2.set_xlabel('Epoch', fontsize=12)
         ax2.set_ylabel('Loss', fontsize=12)
@@ -755,7 +718,7 @@ class CompleteModelTrainer:
         model.compile(
             optimizer=Adam(learning_rate=0.0005),
             loss='binary_crossentropy',
-            metrics=['accuracy', 'Precision', 'Recall', 'AUC']
+            metrics=['accuracy', 'Precision', 'Recall']  # REMOVED AUC
         )
         
         return model
@@ -779,7 +742,7 @@ class CompleteModelTrainer:
         model.compile(
             optimizer=Adam(learning_rate=0.0005),
             loss='binary_crossentropy',
-            metrics=['accuracy', 'Precision', 'Recall', 'AUC']
+            metrics=['accuracy', 'Precision', 'Recall']  # REMOVED AUC
         )
         
         return model
@@ -810,7 +773,6 @@ class CompleteModelTrainer:
                 progress_bar.progress(progress)
                 status_text.text(
                     f"Epoch {epoch+1}/{epochs} - "
-                    f"Loss: {logs.get('loss', 0):.4f}, "
                     f"Accuracy: {logs.get('accuracy', 0):.4f}"
                 )
         
@@ -847,8 +809,6 @@ class CompleteModelTrainer:
             'accuracy': metrics_dict['accuracy'],
             'precision': metrics_dict['precision'],
             'recall': metrics_dict['recall'],
-            'auc': metrics_dict['auc'],
-            'loss': metrics_dict['loss'],
             'f1_score': f1
         }
         
@@ -869,11 +829,11 @@ class CompleteModelTrainer:
         ax1.legend()
         ax1.grid(True, alpha=0.3)
         
-        # Loss plot
+        # Loss plot (keep for visualization only)
         ax2 = axes[1]
-        ax2.plot(history.history['loss'], label='Training', linewidth=2, color='#EF4444')
+        ax2.plot(history.history['loss'], label='Training Loss', linewidth=2, color='#EF4444')
         if 'val_loss' in history.history:
-            ax2.plot(history.history['val_loss'], label='Validation', linewidth=2, color='#F59E0B')
+            ax2.plot(history.history['val_loss'], label='Validation Loss', linewidth=2, color='#F59E0B')
         ax2.set_title('LSTM Loss History', fontsize=14, fontweight='bold')
         ax2.set_xlabel('Epoch')
         ax2.set_ylabel('Loss')
@@ -912,7 +872,6 @@ class CompleteModelTrainer:
                 progress_bar.progress(progress)
                 status_text.text(
                     f"Epoch {epoch+1}/{epochs} - "
-                    f"Loss: {logs.get('loss', 0):.4f}, "
                     f"Accuracy: {logs.get('accuracy', 0):.4f}"
                 )
         
@@ -949,8 +908,6 @@ class CompleteModelTrainer:
             'accuracy': metrics_dict['accuracy'],
             'precision': metrics_dict['precision'],
             'recall': metrics_dict['recall'],
-            'auc': metrics_dict['auc'],
-            'loss': metrics_dict['loss'],
             'f1_score': f1
         }
         
@@ -971,11 +928,11 @@ class CompleteModelTrainer:
         ax1.legend()
         ax1.grid(True, alpha=0.3)
         
-        # Loss plot
+        # Loss plot (keep for visualization only)
         ax2 = axes[1]
-        ax2.plot(history.history['loss'], label='Training', linewidth=2, color='#EF4444')
+        ax2.plot(history.history['loss'], label='Training Loss', linewidth=2, color='#EF4444')
         if 'val_loss' in history.history:
-            ax2.plot(history.history['val_loss'], label='Validation', linewidth=2, color='#F59E0B')
+            ax2.plot(history.history['val_loss'], label='Validation Loss', linewidth=2, color='#F59E0B')
         ax2.set_title('GRU Loss History', fontsize=14, fontweight='bold')
         ax2.set_xlabel('Epoch')
         ax2.set_ylabel('Loss')
@@ -1043,7 +1000,7 @@ class CompleteModelTrainer:
             """, unsafe_allow_html=True)
     
     def compare_models(self):
-        """Bandingkan semua model"""
+        """Bandingkan semua model - REMOVED AUC and Loss columns"""
         if not self.results:
             return None
         
@@ -1054,9 +1011,7 @@ class CompleteModelTrainer:
                 'Accuracy': results['accuracy'],
                 'Precision': results['precision'],
                 'Recall': results['recall'],
-                'F1-Score': results['f1_score'],
-                'AUC': results.get('auc', 0),
-                'Loss': results['loss']
+                'F1-Score': results['f1_score']
             })
         
         return pd.DataFrame(comparison_data)
@@ -1106,7 +1061,7 @@ def main():
         cnn_eval_file = st.file_uploader(
             "Upload cnn_eval.json",
             type=["json"],
-            help="Upload JSON file with CNN evaluation results"
+            help="Upload JSON file with CNN evaluation results (accuracy, precision, recall, f1_score)"
         )
         
         cnn_history_file = st.file_uploader(
@@ -1161,20 +1116,18 @@ def main():
             ```python
             import json
             
-            # Save evaluation results
+            # Save evaluation results (NO AUC, NO LOSS)
             cnn_eval = {
                 'accuracy': 0.95,
                 'precision': 0.94,
                 'recall': 0.93,
-                'f1_score': 0.935,
-                'auc': 0.98,
-                'loss': 0.15
+                'f1_score': 0.935
             }
             
             with open('cnn_eval.json', 'w') as f:
                 json.dump(cnn_eval, f)
             
-            # Save training history
+            # Save training history (loss hanya untuk visualisasi)
             cnn_history = {
                 'accuracy': [0.85, 0.90, 0.92, 0.94, 0.95],
                 'val_accuracy': [0.82, 0.87, 0.90, 0.92, 0.93],
@@ -1349,7 +1302,7 @@ def main():
             trainer = st.session_state.get('trainer')
             
             if trainer and trainer.results:
-                # Best model banner
+                # Best model banner - REMOVED AUC
                 best_model_name, best_model_results = trainer.get_best_model()
                 if best_model_name and best_model_results:
                     st.markdown(f"""
@@ -1368,17 +1321,11 @@ def main():
                                     {best_model_results['f1_score']:.4f}
                                 </div>
                             </div>
-                            <div style="text-align: center;">
-                                <div style="font-size: 0.9rem; color: #64748b;">AUC</div>
-                                <div style="font-size: 1.8rem; font-weight: 700; color: #10b981;">
-                                    {best_model_results.get('auc', 0):.4f}
-                                </div>
-                            </div>
                         </div>
                     </div>
                     """, unsafe_allow_html=True)
                 
-                # Comparison table
+                # Comparison table - REMOVED AUC and Loss
                 st.subheader("📊 Model Performance Comparison")
                 comparison_df = trainer.compare_models()
                 if comparison_df is not None:
@@ -1398,15 +1345,15 @@ def main():
                         return ''
                     
                     # Apply styling
-                    numeric_cols = ['Accuracy', 'Precision', 'Recall', 'F1-Score', 'AUC']
+                    numeric_cols = ['Accuracy', 'Precision', 'Recall', 'F1-Score']
                     styled_df = styled_df.style.applymap(color_cells, subset=numeric_cols)
                     
                     st.dataframe(styled_df, use_container_width=True)
                 
-                # Visual comparison
+                # Visual comparison - REMOVED Loss plot
                 st.subheader("📈 Performance Visualization")
                 if trainer.results:
-                    fig, axes = plt.subplots(2, 3, figsize=(16, 10))
+                    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
                     models = list(trainer.results.keys())
                     
                     # Define colors for each model
@@ -1420,27 +1367,23 @@ def main():
                         ('Accuracy', 'accuracy'),
                         ('Precision', 'precision'),
                         ('Recall', 'recall'),
-                        ('F1-Score', 'f1_score'),
-                        ('AUC', 'auc'),
-                        ('Loss', 'loss')
+                        ('F1-Score', 'f1_score')
                     ]
                     
                     for idx, (title, metric_key) in enumerate(metrics_to_plot):
-                        ax = axes[idx // 3, idx % 3]
+                        ax = axes[idx // 2, idx % 2]
                         values = [trainer.results[m].get(metric_key, 0) for m in models]
                         bar_colors = [colors.get(m, '#94a3b8') for m in models]
                         bars = ax.bar(models, values, color=bar_colors, edgecolor='black')
                         
                         ax.set_title(title, fontsize=14, fontweight='bold')
-                        ax.set_ylabel('Score' if metric_key != 'loss' else 'Loss', fontsize=12)
+                        ax.set_ylabel('Score', fontsize=12)
+                        ax.set_ylim([0, 1])
                         
-                        if metric_key != 'loss':
-                            ax.set_ylim([0, 1])
-                            ax.axhline(y=0.9, color='#10b981', linestyle='--', alpha=0.3, label='Excellent')
-                            ax.axhline(y=0.8, color='#f59e0b', linestyle='--', alpha=0.3, label='Good')
-                            ax.axhline(y=0.7, color='#ef4444', linestyle='--', alpha=0.3, label='Poor')
-                        else:
-                            ax.set_ylim([0, max(values) * 1.2])
+                        # Add threshold lines
+                        ax.axhline(y=0.9, color='#10b981', linestyle='--', alpha=0.3, label='Excellent')
+                        ax.axhline(y=0.8, color='#f59e0b', linestyle='--', alpha=0.3, label='Good')
+                        ax.axhline(y=0.7, color='#ef4444', linestyle='--', alpha=0.3, label='Poor')
                         
                         # Add value labels on bars
                         for bar in bars:
@@ -1450,7 +1393,7 @@ def main():
                                    fontweight='bold')
                         
                         ax.grid(True, alpha=0.2)
-                        if idx == 5:  # Only add legend to last plot
+                        if idx == 3:  # Only add legend to last plot
                             ax.legend(loc='upper right')
                     
                     plt.tight_layout()
@@ -1530,45 +1473,6 @@ def main():
                             data=json_data,
                             file_name="training_summary.json",
                             mime="application/json",
-                            use_container_width=True
-                        )
-                
-                # Download all as ZIP
-                st.subheader("📦 Download Everything")
-                if st.button("🗂️ Create Complete Package", use_container_width=True):
-                    # Create ZIP file
-                    zip_filename = "qr_analysis_package.zip"
-                    with zipfile.ZipFile(zip_filename, 'w') as zf:
-                        # Add models
-                        for model_name, filepath in saved_files.items():
-                            if os.path.exists(filepath):
-                                zf.write(filepath, f"models/{model_name}_model.h5")
-                        
-                        # Add results CSV
-                        if trainer.results:
-                            zf.writestr("results/model_comparison.csv", comparison_df.to_csv(index=False))
-                            zf.writestr("results/summary.json", json.dumps(summary, indent=2))
-                        
-                        # Add README
-                        readme_content = f"""
-QR Code Security Analysis Package
-Generated: {time.strftime("%Y-%m-%d %H:%M:%S")}
-
-Contents:
-1. models/ - Trained LSTM and GRU models
-2. results/ - Performance comparison and summary
-
-Best Model: {trainer.get_best_model()[0].upper()}
-"""
-                        zf.writestr("README.txt", readme_content)
-                    
-                    # Offer download
-                    with open(zip_filename, 'rb') as f:
-                        st.download_button(
-                            label="⬇️ Download Complete Package",
-                            data=f.read(),
-                            file_name=zip_filename,
-                            mime="application/zip",
                             use_container_width=True
                         )
         else:
