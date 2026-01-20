@@ -38,7 +38,7 @@ Fitur
   - Deployment: Platform Web Streamlit (Aksesibilitas Real-Time)
 
 7. Cara Penggunaan
-  1. Siapkan Dataset: Pastikan dataset ZIP memiliki struktur folder /benign dan /malicious. (contohnya seperti folder dataset/1000 QR Images of Malicious and Benign QR codes 2025)
-  2. Jalankan Aplikasi: Unggah ZIP melalui menu Dataset ZIP.
-  3. Analisis: Masukkan data hasil pelatihan model dengan ketentuan eval.json dan history.json untuk melihat perbandingan grafik metrik secara otomatis. (contohnya seperti models/cnn_eval.json)
-  4. Ekspor: Unduh laporan ringkasan untuk kebutuhan dokumentasi ilmiah. 
+   - Siapkan Dataset: Pastikan dataset ZIP memiliki struktur folder /benign dan /malicious. (contohnya seperti folder dataset/1000 QR Images of Malicious and Benign QR codes 2025)
+   - Jalankan Aplikasi: Unggah ZIP melalui menu Dataset ZIP.
+   - Analisis: Masukkan data hasil pelatihan model dengan ketentuan eval.json dan history.json untuk melihat perbandingan grafik metrik secara otomatis. (contohnya seperti models/cnn_eval.json)
+   - Ekspor: Unduh laporan ringkasan untuk kebutuhan dokumentasi ilmiah. 
