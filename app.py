@@ -1,12 +1,12 @@
 """
-QR Code Security Model Evaluator - Streamlit App
-Fokus: Evaluasi & Visualisasi Model Tanpa Training
+QR Code Security Analyzer - MODERN UI VERSION dengan CNN, LSTM, GRU
+[DIMODIFIKASI: CNN upload JSON hasil evaluasi + history]
 """
-
 import streamlit as st
 import numpy as np
 import pandas as pd
 import cv2
+import io
 import os
 import zipfile
 import tempfile
@@ -15,27 +15,32 @@ import time
 import matplotlib.pyplot as plt
 from PIL import Image
 import warnings
+import json
 warnings.filterwarnings('ignore')
 
 # === PAGE CONFIG ===
 st.set_page_config(
-    page_title="QR Model Evaluator",
-    page_icon="📊",
+    page_title="QR Code Model Trainer",
+    page_icon="🤖",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
 # === IMPORT LIBRARIES ===
 import tensorflow as tf
-from tensorflow.keras.models import load_model
-from tensorflow.keras import Sequential
-from tensorflow.keras.layers import Embedding, GRU, LSTM, Dense, Dropout
-from sklearn.metrics import (
-    accuracy_score, precision_score, recall_score, 
-    f1_score, roc_auc_score, confusion_matrix, 
-    classification_report
-)
-import seaborn as sns
+from tensorflow.keras import layers, models, Model, Sequential
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.applications import MobileNetV2
+from tensorflow.keras.preprocessing.text import Tokenizer
+from tensorflow.keras.preprocessing.sequence import pad_sequences
+from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
+from sklearn.model_selection import train_test_split
+from sklearn.utils.class_weight import compute_class_weight
+try:
+    from pyzbar.pyzbar import decode
+    QR_DECODER_AVAILABLE = True
+except ImportError:
+    QR_DECODER_AVAILABLE = False
 
 # === CUSTOM CSS MODERN ===
 st.markdown("""
@@ -94,8 +99,17 @@ body, .stApp, [class*="css"] {
     margin: 0.5rem auto 0;
 }
 
-/* Model Card */
-.model-card {
+/* Dataset Card */
+.dataset-card {
+    background: var(--gray-100);
+    border-radius: 16px;
+    padding: 1.25rem;
+    margin: 1rem 0;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+}
+
+/* Training Cards */
+.training-card {
     background: white;
     border-radius: 16px;
     padding: 1.5rem;
@@ -104,45 +118,67 @@ body, .stApp, [class*="css"] {
     transition: all 0.3s ease;
     border-left: 4px solid #cbd5e1;
 }
-.model-card:hover {
+.training-card:hover {
     transform: translateY(-2px);
     box-shadow: 0 6px 16px rgba(0,0,0,0.1);
 }
-.cnn-card { border-left-color: #3B82F6; }
-.lstm-card { border-left-color: #10B981; }
-.gru-card { border-left-color: #8B5CF6; }
+.cnn-card { 
+    border-left-color: #3B82F6; 
+    background: linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%);
+}
+.lstm-card { 
+    border-left-color: #10B981; 
+    background: linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%);
+}
+.gru-card { 
+    border-left-color: #8B5CF6; 
+    background: linear-gradient(135deg, #f5f3ff 0%, #ede9fe 100%);
+}
+
+/* Upload Section */
+.upload-section {
+    background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
+    border-radius: 12px;
+    padding: 1.5rem;
+    margin: 1rem 0;
+    border: 2px dashed #cbd5e1;
+}
+
+/* Metric Cards */
+.metric-card {
+    background: white;
+    border-radius: 10px;
+    padding: 1rem;
+    margin: 0.5rem;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+    text-align: center;
+}
+.metric-value {
+    font-size: 1.8rem;
+    font-weight: 700;
+    margin: 0.5rem 0;
+}
+.metric-label {
+    font-size: 0.9rem;
+    color: #64748b;
+}
 
 /* Best Model Banner */
-.best-model {
-    background: linear-gradient(135deg, #f0fdf4, #fffbeb);
-    border: 1px solid #d1fae5;
+.best-model-banner {
+    background: linear-gradient(135deg, #f0fdf4 0%, #fffbeb 100%);
+    border: 2px solid #4ade80;
     border-radius: 16px;
-    padding: 1.25rem;
+    padding: 1.5rem;
+    margin: 2rem 0;
     text-align: center;
-    margin: 1.5rem 0;
-    box-shadow: inset 0 0 0 1px #bbf7d0;
+    box-shadow: 0 4px 12px rgba(74, 222, 128, 0.2);
     animation: pulse 2s infinite;
 }
 @keyframes pulse {
-    0% { box-shadow: inset 0 0 0 1px #bbf7d0; }
-    50% { box-shadow: inset 0 0 0 2px #4ade80; }
-    100% { box-shadow: inset 0 0 0 1px #bbf7d0; }
+    0% { box-shadow: 0 4px 12px rgba(74, 222, 128, 0.2); }
+    50% { box-shadow: 0 4px 20px rgba(74, 222, 128, 0.4); }
+    100% { box-shadow: 0 4px 12px rgba(74, 222, 128, 0.2); }
 }
-
-/* Metric Badges */
-.metric-badge {
-    display: inline-block;
-    padding: 0.3rem 0.8rem;
-    border-radius: 50px;
-    font-size: 0.85rem;
-    font-weight: 600;
-    margin: 0.2rem;
-    background: #f1f5f9;
-    color: #334155;
-}
-.metric-good { background: #dcfce7; color: #166534; }
-.metric-medium { background: #fef9c3; color: #854d0e; }
-.metric-poor { background: #fee2e2; color: #991b1b; }
 
 /* Buttons */
 .stButton>button {
@@ -162,14 +198,11 @@ body, .stApp, [class*="css"] {
 
 /* Tabs */
 .stTabs [data-baseweb="tab-list"] {
-    gap: 24px;
+    gap: 8px;
 }
 .stTabs [data-baseweb="tab"] {
     height: 40px;
-    white-space: pre-wrap;
-    background-color: transparent;
-    border-radius: 8px 8px 0 0;
-    gap: 1rem;
+    border-radius: 8px;
     padding: 8px 16px;
     font-weight: 600;
 }
@@ -178,27 +211,148 @@ body, .stApp, [class*="css"] {
     color: white;
 }
 
-/* Footer */
-.footer {
-    text-align: center;
-    padding: 1.5rem 0 0.5rem;
-    color: #94a3b8;
-    font-size: 0.85rem;
+/* Progress Bar */
+.stProgress > div > div > div {
+    background: linear-gradient(90deg, #4f46e5, #7c3aed);
+}
+
+/* Image Grid */
+.image-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+    gap: 1rem;
+    margin-top: 1rem;
+}
+.image-grid-item {
+    border-radius: 10px;
+    overflow: hidden;
+    border: 2px solid #e5e7eb;
+}
+.image-grid-item:hover {
+    border-color: #4f46e5;
+    transform: scale(1.05);
+    transition: all 0.3s ease;
 }
 </style>
 """, unsafe_allow_html=True)
 
 class DatasetProcessor:
-    """Class untuk processing dataset upload untuk evaluasi"""
+    """Class untuk processing dataset upload"""
     
     def __init__(self):
         self.IMG_SIZE = (224, 224)
         self.MAX_LEN = 200
         self.VOCAB_SIZE = 1000
         self.tokenizer = None
+        self.dataset_info = {}
+    
+    def extract_all_files(self, zip_path, extract_to):
+        """Extract semua file dari ZIP"""
+        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            zip_ref.extractall(extract_to)
+    
+    def find_folders(self, base_path):
+        """Cari folder benign dan malicious"""
+        benign_path = None
+        malicious_path = None
+        
+        for root, dirs, files in os.walk(base_path):
+            dirs_lower = [d.lower() for d in dirs]
+            
+            if 'benign' in dirs_lower:
+                idx = dirs_lower.index('benign')
+                benign_path = os.path.join(root, dirs[idx])
+            
+            if 'malicious' in dirs_lower:
+                idx = dirs_lower.index('malicious')
+                malicious_path = os.path.join(root, dirs[idx])
+        
+        return benign_path, malicious_path
+    
+    def count_images_in_folder(self, folder_path):
+        """Hitung gambar di folder"""
+        if not folder_path or not os.path.exists(folder_path):
+            return 0, []
+        
+        image_extensions = ['.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.gif']
+        image_files = []
+        
+        for filename in os.listdir(folder_path):
+            if any(filename.lower().endswith(ext) for ext in image_extensions):
+                image_files.append(os.path.join(folder_path, filename))
+        
+        return len(image_files), image_files[:5]
+    
+    def extract_qr_content_robust(self, image_path):
+        """Extract QR content dengan multiple attempts"""
+        try:
+            img = cv2.imread(image_path)
+            if img is None:
+                return ""
+            
+            decoded = decode(img)
+            if decoded:
+                return decoded[0].data.decode('utf-8', errors='ignore')
+            
+            # Try preprocessing
+            try:
+                gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+                _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                decoded = decode(thresh)
+                if decoded:
+                    return decoded[0].data.decode('utf-8', errors='ignore')
+            except:
+                pass
+            
+            return ""
+            
+        except Exception as e:
+            return ""
+    
+    def generate_synthetic_text(self, label):
+        """Generate synthetic text untuk training"""
+        import random
+        
+        if label == 0:  # benign
+            templates = [
+                "https://safe-website.com/login",
+                "WIFI:S:Network;T:WPA2;P:password123;;",
+                "mailto:contact@company.com",
+                "BEGIN:VCARD\nFN:John Doe\nTEL:+1234567890\nEND:VCARD",
+                "https://www.trusted-site.com",
+                "geo:40.7128,-74.0060",
+                "SMSTO:+1234567890:Hello",
+                "MATMSG:TO:email@test.com;SUB:Test;BODY:Message;;",
+                "https://docs.google.com/document",
+                "bit.ly/safe-link-123"
+            ]
+        else:  # malicious
+            templates = [
+                "http://malicious-site.com/login.php",
+                "javascript:alert('XSS')",
+                "data:text/html;base64,PHNjcmlwdD5hbGVydCgnWCcpPC9zY3JpcHQ+",
+                "http://192.168.1.1:8080/admin",
+                "https://bit.ly/suspicious-xyz",
+                "Download free virus: http://bad.exe",
+                "You won $1,000,000! Claim: http://scam.com",
+                "Account locked! Reset: http://phishing-bank.com",
+                "Free Bitcoin: http://crypto-scam.com",
+                "http://free-gift-cards.xyz/login"
+            ]
+        
+        base_text = random.choice(templates)
+        variations = [
+            "",
+            "?id=" + str(random.randint(1000, 9999)),
+            "&session=" + ''.join(random.choices('abcdefghijklmnopqrstuvwxyz0123456789', k=8)),
+            "#" + ''.join(random.choices('abcdefghijklmnopqrstuvwxyz', k=5))
+        ]
+        
+        return base_text + random.choice(variations)
     
     def process_zip_file(self, uploaded_zip):
-        """Process uploaded ZIP file untuk mendapatkan data evaluasi"""
+        """Process uploaded ZIP file"""
+        
         temp_dir = tempfile.mkdtemp()
         
         try:
@@ -209,29 +363,28 @@ class DatasetProcessor:
             extract_path = os.path.join(temp_dir, 'extracted')
             os.makedirs(extract_path, exist_ok=True)
             
-            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                zip_ref.extractall(extract_path)
+            self.extract_all_files(zip_path, extract_path)
             
-            # Cari folder benign dan malicious
-            benign_path = None
-            malicious_path = None
+            benign_path, malicious_path = self.find_folders(extract_path)
             
-            for root, dirs, files in os.walk(extract_path):
-                dirs_lower = [d.lower() for d in dirs]
-                
-                if 'benign' in dirs_lower:
-                    idx = dirs_lower.index('benign')
-                    benign_path = os.path.join(root, dirs[idx])
-                
-                if 'malicious' in dirs_lower:
-                    idx = dirs_lower.index('malicious')
-                    malicious_path = os.path.join(root, dirs[idx])
+            benign_count, benign_samples = self.count_images_in_folder(benign_path)
+            malicious_count, malicious_samples = self.count_images_in_folder(malicious_path)
             
-            return {
+            dataset_info = {
+                'total_images': benign_count + malicious_count,
+                'benign_count': benign_count,
+                'malicious_count': malicious_count,
+                'benign_samples': benign_samples,
+                'malicious_samples': malicious_samples,
                 'benign_path': benign_path,
                 'malicious_path': malicious_path,
+                'extract_path': extract_path,
+                'has_benign': benign_count > 0,
+                'has_malicious': malicious_count > 0,
                 'temp_dir': temp_dir
             }
+            
+            return dataset_info
             
         except Exception as e:
             st.error(f"Error processing ZIP: {str(e)}")
@@ -239,901 +392,1189 @@ class DatasetProcessor:
                 shutil.rmtree(temp_dir, ignore_errors=True)
             return None
     
-    def prepare_evaluation_data(self, dataset_info, max_samples=100):
-        """Prepare data evaluasi untuk semua model"""
+    def prepare_training_data(self, dataset_info, use_synthetic=True):
+        """Prepare data untuk semua model"""
         images = []
         texts = []
         labels = []
-        
-        # Generate synthetic text untuk evaluasi (untuk LSTM/GRU)
-        def generate_text(label):
-            import random
-            if label == 0:  # benign
-                templates = [
-                    "https://safe-website.com/login",
-                    "WIFI:S:Network;T:WPA2;P:password123;;",
-                    "https://www.trusted-site.com",
-                    "mailto:contact@company.com",
-                    "BEGIN:VCARD\nFN:John Doe\nTEL:+1234567890\nEND:VCARD"
-                ]
-            else:  # malicious
-                templates = [
-                    "http://malicious-site.com/login.php",
-                    "javascript:alert('XSS')",
-                    "https://bit.ly/suspicious-xyz",
-                    "Download free virus: http://bad.exe",
-                    "You won $1,000,000! Claim: http://scam.com"
-                ]
-            return random.choice(templates)
-        
+        valid_text_count = 0
+
         # Process benign images
-        if dataset_info['benign_path'] and os.path.exists(dataset_info['benign_path']):
-            benign_files = [f for f in os.listdir(dataset_info['benign_path']) 
-                          if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp'))]
-            
-            for filename in benign_files[:max_samples//2]:
-                try:
+        if dataset_info['has_benign'] and dataset_info['benign_path']:
+            for filename in os.listdir(dataset_info['benign_path']):
+                if filename.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp')):
                     img_path = os.path.join(dataset_info['benign_path'], filename)
-                    img = cv2.imread(img_path)
-                    if img is not None:
-                        img_resized = cv2.resize(img, self.IMG_SIZE)
-                        img_resized = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB)
-                        images.append(img_resized)
-                        texts.append(generate_text(0))
-                        labels.append(0)
-                except:
-                    continue
+                    
+                    try:
+                        img = cv2.imread(img_path)
+                        if img is not None:
+                            img_resized = cv2.resize(img, self.IMG_SIZE)
+                            img_resized = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB)
+                            images.append(img_resized)
+                            
+                            # Untuk LSTM/GRU
+                            text_content = self.extract_qr_content_robust(img_path)
+                            if text_content:
+                                texts.append(text_content)
+                                valid_text_count += 1
+                            elif use_synthetic:
+                                texts.append(self.generate_synthetic_text(0))
+                            else:
+                                texts.append("")
+                            
+                            labels.append(0)  # benign
+                    except Exception as e:
+                        continue
         
         # Process malicious images
-        if dataset_info['malicious_path'] and os.path.exists(dataset_info['malicious_path']):
-            malicious_files = [f for f in os.listdir(dataset_info['malicious_path']) 
-                             if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp'))]
-            
-            for filename in malicious_files[:max_samples//2]:
-                try:
+        if dataset_info['has_malicious'] and dataset_info['malicious_path']:
+            for filename in os.listdir(dataset_info['malicious_path']):
+                if filename.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp')):
                     img_path = os.path.join(dataset_info['malicious_path'], filename)
-                    img = cv2.imread(img_path)
-                    if img is not None:
-                        img_resized = cv2.resize(img, self.IMG_SIZE)
-                        img_resized = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB)
-                        images.append(img_resized)
-                        texts.append(generate_text(1))
-                        labels.append(1)
-                except:
-                    continue
+                    
+                    try:
+                        img = cv2.imread(img_path)
+                        if img is not None:
+                            img_resized = cv2.resize(img, self.IMG_SIZE)
+                            img_resized = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB)
+                            images.append(img_resized)
+                            
+                            text_content = self.extract_qr_content_robust(img_path)
+                            if text_content:
+                                texts.append(text_content)
+                                valid_text_count += 1
+                            elif use_synthetic:
+                                texts.append(self.generate_synthetic_text(1))
+                            else:
+                                texts.append("")
+                            
+                            labels.append(1)  # malicious
+                    except Exception as e:
+                        continue
         
+        # === CHECK IF DATA EXISTS ===
         if len(images) == 0:
-            st.error("❌ Tidak ada gambar yang berhasil diproses untuk evaluasi!")
+            st.error("❌ Tidak ada gambar yang berhasil diproses!")
             return None
         
-        # Convert to numpy arrays
+        # === CONVERT TO NUMPY ===
         images_array = np.array(images, dtype='float32') / 255.0
         labels_array = np.array(labels)
         texts_array = np.array(texts)
         
-        # Prepare text sequences untuk LSTM/GRU
-        from tensorflow.keras.preprocessing.text import Tokenizer
-        from tensorflow.keras.preprocessing.sequence import pad_sequences
+        # === CHECK LABEL DISTRIBUTION ===
+        unique_labels, label_counts = np.unique(labels_array, return_counts=True)
         
-        # Buat tokenizer sederhana
-        self.tokenizer = Tokenizer(
-            num_words=self.VOCAB_SIZE,
-            char_level=False,
-            lower=True,
-            oov_token='<OOV>'
-        )
-        self.tokenizer.fit_on_texts(texts_array)
+        if len(unique_labels) < 2:
+            st.error(f"❌ Hanya ada {len(unique_labels)} kelas. Butuh minimal 2 kelas (benign & malicious).")
+            return None
         
-        sequences = self.tokenizer.texts_to_sequences(texts_array)
+        # === SPLIT DATA ===
+        try:
+            indices = np.arange(len(images_array))
+            
+            # Split untuk CNN
+            train_idx_cnn, test_idx_cnn = train_test_split(
+                indices,
+                test_size=0.2,
+                random_state=42,
+                stratify=labels_array if len(indices) >= 10 and min(label_counts) >= 2 else None
+            )
+            
+            # Split untuk text models
+            train_idx_txt, test_idx_txt = train_test_split(
+                indices,
+                test_size=0.2,
+                random_state=43
+            )
+            
+        except Exception as e:
+            # Fallback: manual split
+            split_idx = int(len(images_array) * 0.8)
+            train_idx_cnn = np.arange(split_idx)
+            test_idx_cnn = np.arange(split_idx, len(images_array))
+            train_idx_txt = train_idx_cnn.copy()
+            test_idx_txt = test_idx_cnn.copy()
+        
+        # Prepare CNN data
+        X_train_img = images_array[train_idx_cnn]
+        X_test_img = images_array[test_idx_cnn]
+        y_train_img = labels_array[train_idx_cnn]
+        y_test_img = labels_array[test_idx_cnn]
+        
+        # Prepare text data
+        X_train_txt = texts_array[train_idx_txt]
+        X_test_txt = texts_array[test_idx_txt]
+        y_train_txt = labels_array[train_idx_txt]
+        y_test_txt = labels_array[test_idx_txt]
+        
+        # === PREPARE TEXT TOKENIZER ===
+        try:
+            self.tokenizer = Tokenizer(
+                num_words=self.VOCAB_SIZE,
+                char_level=False,
+                lower=True,
+                oov_token='<OOV>',
+                filters='!"#$%&()*+,-./:;<=>?@[\\]^_`{|}~\t\n'
+            )
+            
+            self.tokenizer.fit_on_texts(X_train_txt)
+            
+            X_train_seq = self.texts_to_sequences(X_train_txt)
+            X_test_seq = self.texts_to_sequences(X_test_txt)
+            
+            vocab_size = min(self.VOCAB_SIZE, len(self.tokenizer.word_index) + 1)
+            
+        except Exception as e:
+            # Buat data dummy jika text processing gagal
+            X_train_seq = np.zeros((len(X_train_txt), self.MAX_LEN))
+            X_test_seq = np.zeros((len(X_test_txt), self.MAX_LEN))
+            vocab_size = self.VOCAB_SIZE
+        
+        # === CALCULATE CLASS WEIGHTS ===
+        try:
+            classes = np.unique(y_train_txt)
+            class_weights = compute_class_weight(
+                class_weight='balanced',
+                classes=classes,
+                y=y_train_txt
+            )
+            class_weight_dict = dict(zip(classes, class_weights))
+        except Exception as e:
+            class_weight_dict = {0: 1.0, 1: 1.0}
+        
+        return {
+            # CNN data
+            'X_train_img': X_train_img,
+            'X_test_img': X_test_img,
+            'y_train_img': y_train_img,
+            'y_test_img': y_test_img,
+            
+            # Text data
+            'X_train_seq': X_train_seq,
+            'X_test_seq': X_test_seq,
+            'y_train_txt': y_train_txt,
+            'y_test_txt': y_test_txt,
+            'X_train_txt': X_train_txt,
+            'X_test_txt': X_test_txt,
+            
+            # Info
+            'total_samples': len(images),
+            'valid_texts': valid_text_count,
+            'class_weights': class_weight_dict,
+            'vocab_size': vocab_size,
+            'label_distribution': dict(zip(unique_labels, label_counts))
+        }
+    
+    def texts_to_sequences(self, texts):
+        """Convert texts to padded sequences"""
+        sequences = self.tokenizer.texts_to_sequences(texts)
+        
         for i in range(len(sequences)):
             if len(sequences[i]) == 0:
                 sequences[i] = [self.tokenizer.word_index.get('<OOV>', 1)]
         
-        text_sequences = pad_sequences(
+        padded = pad_sequences(
             sequences, 
             maxlen=self.MAX_LEN, 
             padding='post', 
-            truncating='post'
+            truncating='post',
+            value=self.tokenizer.word_index.get('<OOV>', 0)
         )
         
-        st.success(f"✅ Data evaluasi siap: {len(images)} sampel")
-        
-        return {
-            'X_img': images_array,
-            'X_txt_seq': text_sequences,
-            'y_true': labels_array,
-            'X_txt_raw': texts_array,
-            'vocab_size': min(self.VOCAB_SIZE, len(self.tokenizer.word_index) + 1)
-        }
+        return padded
 
-class ModelEvaluator:
-    def __init__(self):
-        # Gunakan session state untuk persistensi
-        if 'loaded_models' not in st.session_state:
-            st.session_state['loaded_models'] = {}
-        if 'evaluation_results' not in st.session_state:
-            st.session_state['evaluation_results'] = {}
-        if 'predictions' not in st.session_state:
-            st.session_state['predictions'] = {}
-        
-        self.models = st.session_state['loaded_models']
-        self.evaluation_results = st.session_state['evaluation_results']
-        self.predictions = st.session_state['predictions']
+class CompleteModelTrainer:
+    """Complete trainer untuk semua model - MODIFIED: CNN upload JSON results"""
     
-    def load_model_quishing_specific(self, model_type, model_file):
-        """Load model dengan arsitektur spesifik penelitian quishing Anda"""
+    def __init__(self):
+        self.models = {}
+        self.histories = {}
+        self.results = {}
+        self.cnn_model = None
+    
+    def load_cnn_offline_results(self, eval_file, history_file):
+        """Load CNN results dari file JSON"""
         try:
-            # Simpan file sementara
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.h5') as tmp_file:
-                tmp_file.write(model_file.getvalue())
-                tmp_path = tmp_file.name
+            # Load evaluation results
+            eval_content = eval_file.read().decode('utf-8')
+            cnn_eval = json.loads(eval_content)
             
-            st.info(f"🧠 Loading {model_type.upper()} model (Quishing Research Architecture)...")
+            # Load history
+            history_content = history_file.read().decode('utf-8')
+            cnn_history = json.loads(history_content)
             
-            try:
-                # Method 1: Coba load langsung dengan custom objects lengkap
-                custom_objects = {
-                    'Adam': tf.keras.optimizers.Adam,
-                    'LSTM': tf.keras.layers.LSTM,
-                    'GRU': tf.keras.layers.GRU,
-                    'Embedding': tf.keras.layers.Embedding,
-                    'GlobalMaxPooling1D': tf.keras.layers.GlobalMaxPooling1D,
-                    'GlobalAveragePooling1D': tf.keras.layers.GlobalAveragePooling1D,
-                    'Dense': tf.keras.layers.Dense,
-                    'Dropout': tf.keras.layers.Dropout,
-                    'Sequential': tf.keras.Sequential,
-                }
-                
-                model = tf.keras.models.load_model(
-                    tmp_path, 
-                    compile=False,
-                    custom_objects=custom_objects
-                )
-                
-                st.success(f"✅ {model_type.upper()} loaded directly!")
-                
-            except Exception as e:
-                st.warning(f"⚠️ Direct load failed: {str(e)[:80]}")
-                
-                # Method 2: Bangun ulang arsitektur spesifik
-                model = self.reconstruct_quishing_model(model_type, tmp_path)
-                
-                if model is None:
-                    st.error(f"❌ Failed to reconstruct {model_type} model")
-                    os.unlink(tmp_path)
-                    return False
+            # Ensure all required metrics exist
+            required_metrics = ['accuracy', 'precision', 'recall', 'f1_score', 'auc', 'loss']
+            for metric in required_metrics:
+                if metric not in cnn_eval:
+                    if metric == 'f1_score':
+                        # Calculate F1-score from precision and recall
+                        precision = cnn_eval.get('precision', 0)
+                        recall = cnn_eval.get('recall', 0)
+                        cnn_eval['f1_score'] = 2 * (precision * recall) / (precision + recall + 1e-7)
+                    else:
+                        cnn_eval[metric] = 0
             
-            # Recompile model
-            model.compile(
-                optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
-                loss='binary_crossentropy',
-                metrics=['accuracy']
-            )
-            
-            # Simpan model
-            self.models[model_type] = model
-            st.session_state['loaded_models'] = self.models  # Simpan ke session
-            
-            os.unlink(tmp_path)
-            
-            # Tampilkan arsitektur
-            self.display_model_architecture(model, model_type)
+            # Simpan hasil
+            self.results['cnn'] = cnn_eval
+            self.histories['cnn'] = cnn_history
             
             return True
             
         except Exception as e:
-            st.error(f"❌ Error loading {model_type}: {str(e)}")
-            import traceback
-            st.error(f"Traceback: {traceback.format_exc()}")
+            st.error(f"❌ Error loading CNN JSON results: {e}")
             return False
-        
-    def reconstruct_quishing_model(self, model_type, weights_path):
-        """Bangun ulang model dengan arsitektur penelitian quishing Anda"""
-        
-        st.info(f"🏗️ Reconstructing {model_type.upper()} from research code...")
-        
-        # Parameter berdasarkan kode tuning Anda
-        if model_type == 'lstm':
-            # PARAMETER LSTM dari kode Anda
-            vocab_size = 1000  # Default, akan diupdate jika ada info
-            max_len = 200      # Dari prepare_text_data di LSTM tuning
-            embedding_dim = 64 # Dari best_params
-            lstm_units = 64    # Dari best_params
-            dropout_rate = 0.5 # Dari best_params
-            
-            model = tf.keras.Sequential([
-                tf.keras.layers.Embedding(
-                    input_dim=vocab_size, 
-                    output_dim=embedding_dim, 
-                    input_length=max_len,
-                    name='embedding_layer'
-                ),
-                
-                # LSTM dengan return_sequences=True untuk GlobalMaxPooling1D
-                tf.keras.layers.LSTM(
-                    units=lstm_units, 
-                    dropout=dropout_rate, 
-                    return_sequences=True,
-                    name='lstm_layer'
-                ),
-                
-                # GLOBALMAXPOOLING1D - Fitur unik penelitian Anda
-                tf.keras.layers.GlobalMaxPooling1D(name='global_max_pooling'),
-                
-                tf.keras.layers.Dense(16, activation='relu', name='dense_16'),
-                tf.keras.layers.Dropout(dropout_rate, name='dropout_layer'),
-                tf.keras.layers.Dense(1, activation='sigmoid', name='output_layer')
-            ])
-            
-            st.write(f"📐 LSTM Architecture: Embedding({vocab_size},{embedding_dim}) → "
-                    f"LSTM({lstm_units}) → GlobalMaxPooling1D → Dense(16)")
-        
-        elif model_type == 'gru':
-            # PARAMETER GRU dari kode Anda
-            vocab_size = 1000  # Default
-            max_len = 50       # Dari tune_gru function
-            embedding_dim = 64 # Dari best_params (combination 2)
-            gru_units = 64     # Dari best_params (combination 2)
-            dropout_rate = 0.5 # Dari best_params (combination 2)
-            
-            model = tf.keras.Sequential([
-                tf.keras.layers.Embedding(
-                    input_dim=vocab_size, 
-                    output_dim=embedding_dim, 
-                    input_length=max_len,
-                    name='embedding_layer'
-                ),
-                
-                # GRU dengan return_sequences=True
-                tf.keras.layers.GRU(
-                    units=gru_units, 
-                    dropout=dropout_rate, 
-                    return_sequences=True,
-                    name='gru_layer'
-                ),
-                
-                # GLOBALMAXPOOLING1D - Sama seperti LSTM
-                tf.keras.layers.GlobalMaxPooling1D(name='global_max_pooling'),
-                
-                tf.keras.layers.Dense(16, activation='relu', name='dense_16'),
-                tf.keras.layers.Dropout(dropout_rate, name='dropout_layer'),
-                tf.keras.layers.Dense(1, activation='sigmoid', name='output_layer')
-            ])
-            
-            st.write(f"📐 GRU Architecture: Embedding({vocab_size},{embedding_dim}) → "
-                    f"GRU({gru_units}) → GlobalMaxPooling1D → Dense(16)")
-        
-        elif model_type == 'cnn':
-            # PARAMETER CNN dari kode Anda
-            learning_rate = 0.001  # Dari best_params
-            dropout_rate = 0.5     # Dari best_params (combination 3)
-            num_filters = 128      # Dari best_params (combination 2 & 3)
-            
-            model = tf.keras.Sequential([
-                tf.keras.layers.Input(shape=(224, 224, 3)),
-                
-                tf.keras.layers.Conv2D(num_filters, (3, 3), activation='relu', padding='same'),
-                tf.keras.layers.MaxPooling2D((2, 2)),
-                
-                tf.keras.layers.Conv2D(num_filters * 2, (3, 3), activation='relu', padding='same'),
-                tf.keras.layers.MaxPooling2D((2, 2)),
-                
-                tf.keras.layers.Flatten(),
-                tf.keras.layers.Dense(64, activation='relu'),
-                tf.keras.layers.Dropout(dropout_rate),
-                tf.keras.layers.Dense(1, activation='sigmoid')
-            ])
-            
-            st.write(f"📐 CNN Architecture: Conv2D({num_filters}) → Conv2D({num_filters*2}) → Dense(64)")
-        
-        else:
-            st.error(f"Unknown model type: {model_type}")
+    
+    def display_cnn_results(self):
+        """Tampilkan hasil CNN dari JSON"""
+        if 'cnn' not in self.results:
             return None
         
-        # Coba load weights
-        try:
-            model.load_weights(weights_path)
-            st.success(f"✅ Weights loaded successfully for {model_type}")
-        except Exception as e:
-            st.warning(f"⚠️ Could not load exact weights: {str(e)[:100]}")
-            
-            # Coba load dengan skip mismatch
-            try:
-                model.load_weights(weights_path, by_name=True, skip_mismatch=True)
-                st.info("✅ Partial weights loaded (skip_mismatch=True)")
-            except:
-                st.error("❌ Failed to load any weights")
-                return None
+        cnn_eval = self.results['cnn']
+        
+        # Create metric cards
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.markdown(f"""
+            <div class="metric-card">
+                <div class="metric-label">Accuracy</div>
+                <div class="metric-value" style="color: {'#10b981' if cnn_eval['accuracy'] > 0.8 else '#f59e0b'}">
+                    {cnn_eval['accuracy']:.4f}
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        with col2:
+            st.markdown(f"""
+            <div class="metric-card">
+                <div class="metric-label">Precision</div>
+                <div class="metric-value" style="color: {'#10b981' if cnn_eval['precision'] > 0.8 else '#f59e0b'}">
+                    {cnn_eval['precision']:.4f}
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        with col3:
+            st.markdown(f"""
+            <div class="metric-card">
+                <div class="metric-label">Recall</div>
+                <div class="metric-value" style="color: {'#10b981' if cnn_eval['recall'] > 0.8 else '#f59e0b'}">
+                    {cnn_eval['recall']:.4f}
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        with col4:
+            st.markdown(f"""
+            <div class="metric-card">
+                <div class="metric-label">F1-Score</div>
+                <div class="metric-value" style="color: {'#10b981' if cnn_eval['f1_score'] > 0.8 else '#f59e0b'}">
+                    {cnn_eval['f1_score']:.4f}
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        # Additional metrics
+        col5, col6 = st.columns(2)
+        with col5:
+            st.markdown(f"""
+            <div class="metric-card">
+                <div class="metric-label">AUC</div>
+                <div class="metric-value" style="color: {'#10b981' if cnn_eval.get('auc', 0) > 0.8 else '#f59e0b'}">
+                    {cnn_eval.get('auc', 0):.4f}
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        with col6:
+            st.markdown(f"""
+            <div class="metric-card">
+                <div class="metric-label">Loss</div>
+                <div class="metric-value" style="color: {'#ef4444' if cnn_eval['loss'] > 0.5 else '#10b981'}">
+                    {cnn_eval['loss']:.4f}
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        # Display history plot if available
+        if 'cnn' in self.histories:
+            self.plot_cnn_history()
+    
+    def plot_cnn_history(self):
+        """Plot CNN training history"""
+        history = self.histories['cnn']
+        
+        fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+        
+        # Accuracy plot
+        ax1 = axes[0]
+        if 'accuracy' in history:
+            ax1.plot(history['accuracy'], label='Training', linewidth=2, color='#3B82F6')
+        if 'val_accuracy' in history:
+            ax1.plot(history['val_accuracy'], label='Validation', linewidth=2, color='#10B981')
+        ax1.set_title('CNN Accuracy History', fontsize=14, fontweight='bold')
+        ax1.set_xlabel('Epoch', fontsize=12)
+        ax1.set_ylabel('Accuracy', fontsize=12)
+        ax1.legend(loc='best')
+        ax1.grid(True, alpha=0.3)
+        ax1.set_ylim([0, 1])
+        
+        # Loss plot
+        ax2 = axes[1]
+        if 'loss' in history:
+            ax2.plot(history['loss'], label='Training', linewidth=2, color='#3B82F6')
+        if 'val_loss' in history:
+            ax2.plot(history['val_loss'], label='Validation', linewidth=2, color='#EF4444')
+        ax2.set_title('CNN Loss History', fontsize=14, fontweight='bold')
+        ax2.set_xlabel('Epoch', fontsize=12)
+        ax2.set_ylabel('Loss', fontsize=12)
+        ax2.legend(loc='best')
+        ax2.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        st.pyplot(fig)
+    
+    def build_lstm_model(self, vocab_size, max_len=200):
+        """Build LSTM model"""
+        model = Sequential([
+            layers.Embedding(
+                input_dim=vocab_size,
+                output_dim=64,
+                input_length=max_len,
+                mask_zero=True
+            ),
+            layers.Bidirectional(layers.LSTM(64, return_sequences=True, dropout=0.2)),
+            layers.Bidirectional(layers.LSTM(32, dropout=0.2)),
+            layers.Dense(32, activation='relu'),
+            layers.Dropout(0.3),
+            layers.Dense(1, activation='sigmoid')
+        ])
+        
+        model.compile(
+            optimizer=Adam(learning_rate=0.0005),
+            loss='binary_crossentropy',
+            metrics=['accuracy', 'Precision', 'Recall', 'AUC']
+        )
         
         return model
-
-    def display_model_architecture(self, model, model_type):
-        st.write(f"\n📐 **{model_type.upper()} Model Architecture**")
-        st.write("="*60)
-        
-        for i, layer in enumerate(model.layers):
-            try:
-                output_shape = layer.output_shape
-            except:
-                output_shape = "Dynamic"
-            
-            st.write(f"{i+1:02d}. **{layer.name}** | Type: {layer.__class__.__name__} | Output: {output_shape}")
     
-    def evaluate_model(self, model_type, evaluation_data):
-        """Evaluasi model pada data evaluasi"""
-        if model_type not in self.models:
-            st.error(f"Model {model_type} belum di-load!")
-            return False
+    def build_gru_model(self, vocab_size, max_len=200):
+        """Build GRU model"""
+        model = Sequential([
+            layers.Embedding(
+                input_dim=vocab_size,
+                output_dim=64,
+                input_length=max_len,
+                mask_zero=True
+            ),
+            layers.Bidirectional(layers.GRU(64, return_sequences=True, dropout=0.2)),
+            layers.Bidirectional(layers.GRU(32, dropout=0.2)),
+            layers.Dense(32, activation='relu'),
+            layers.Dropout(0.3),
+            layers.Dense(1, activation='sigmoid')
+        ])
         
-        model = self.models[model_type]
+        model.compile(
+            optimizer=Adam(learning_rate=0.0005),
+            loss='binary_crossentropy',
+            metrics=['accuracy', 'Precision', 'Recall', 'AUC']
+        )
         
-        try:
-            # Get predictions berdasarkan tipe model
-            if model_type in ['cnn']:
-                # CNN menggunakan data gambar
-                y_pred_proba = model.predict(evaluation_data['X_img'], verbose=0).flatten()
-            elif model_type in ['lstm', 'gru']:
-                # LSTM/GRU menggunakan data teks
-                y_pred_proba = model.predict(evaluation_data['X_txt_seq'], verbose=0).flatten()
-            else:
-                st.error(f"Tipe model {model_type} tidak dikenali!")
-                return False
-            
-            # Convert probabilities to binary predictions
-            y_pred = (y_pred_proba > 0.5).astype(int)
-            y_true = evaluation_data['y_true']
-            
-            # Calculate metrics
-            accuracy = accuracy_score(y_true, y_pred)
-            precision = precision_score(y_true, y_pred, zero_division=0)
-            recall = recall_score(y_true, y_pred, zero_division=0)
-            f1 = f1_score(y_true, y_pred, zero_division=0)
-            
-            # Try to calculate AUC
-            try:
-                auc = roc_auc_score(y_true, y_pred_proba)
-            except:
-                auc = 0.5
-            
-            # Store results
-            self.evaluation_results[model_type] = {
-                'accuracy': accuracy,
-                'precision': precision,
-                'recall': recall,
-                'f1_score': f1,
-                'auc': auc,
-                'y_true': y_true,
-                'y_pred': y_pred,
-                'y_pred_proba': y_pred_proba
-            }
-            
-            self.predictions[model_type] = {
-                'y_pred': y_pred,
-                'y_pred_proba': y_pred_proba
-            }
-            
-            # Simpan ke session state
-            st.session_state['evaluation_results'] = self.evaluation_results
-            st.session_state['predictions'] = self.predictions
-            
-            return True
-            
-        except Exception as e:
-            st.error(f"❌ Error evaluating {model_type}: {str(e)}")
-            return False
+        return model
     
-    def get_confusion_matrix(self, model_type):
-        """Get confusion matrix untuk model tertentu"""
-        if model_type not in self.evaluation_results:
-            return None
+    def train_lstm(self, training_data, epochs=15, batch_size=32):
+        """Train LSTM model"""
+        st.markdown('<div class="training-card lstm-card">', unsafe_allow_html=True)
         
-        y_true = self.evaluation_results[model_type]['y_true']
-        y_pred = self.evaluation_results[model_type]['y_pred']
+        # Header with icon
+        col_header = st.columns([1, 8])
+        with col_header[0]:
+            st.markdown("<h2 style='margin:0;'>📝</h2>", unsafe_allow_html=True)
+        with col_header[1]:
+            st.subheader("Training LSTM Model")
         
-        return confusion_matrix(y_true, y_pred)
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        model = self.build_lstm_model(training_data['vocab_size'])
+        
+        # Callbacks
+        early_stopping = EarlyStopping(monitor='val_loss', patience=3, restore_best_weights=True)
+        reduce_lr = ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=2, min_lr=0.00001)
+        
+        class LSTMCallback(tf.keras.callbacks.Callback):
+            def on_epoch_end(self, epoch, logs=None):
+                progress = (epoch + 1) / epochs
+                progress_bar.progress(progress)
+                status_text.text(
+                    f"Epoch {epoch+1}/{epochs} - "
+                    f"Loss: {logs.get('loss', 0):.4f}, "
+                    f"Accuracy: {logs.get('accuracy', 0):.4f}"
+                )
+        
+        # Training
+        with st.spinner("Training LSTM model..."):
+            history = model.fit(
+                training_data['X_train_seq'], training_data['y_train_txt'],
+                validation_data=(training_data['X_test_seq'], training_data['y_test_txt']),
+                epochs=epochs,
+                batch_size=batch_size,
+                class_weight=training_data.get('class_weights'),
+                verbose=0,
+                callbacks=[LSTMCallback(), early_stopping, reduce_lr]
+            )
+        
+        progress_bar.progress(1.0)
+        status_text.text("✅ LSTM Training Complete!")
+        
+        # Evaluate
+        eval_results = model.evaluate(
+            training_data['X_test_seq'], training_data['y_test_txt'], verbose=0
+        )
+        
+        metrics_dict = dict(zip(model.metrics_names, eval_results))
+        
+        self.models['lstm'] = model
+        self.histories['lstm'] = history.history
+        
+        # Calculate F1-score
+        f1 = 2 * (metrics_dict['precision'] * metrics_dict['recall']) / \
+             (metrics_dict['precision'] + metrics_dict['recall'] + 1e-7)
+        
+        self.results['lstm'] = {
+            'accuracy': metrics_dict['accuracy'],
+            'precision': metrics_dict['precision'],
+            'recall': metrics_dict['recall'],
+            'auc': metrics_dict['auc'],
+            'loss': metrics_dict['loss'],
+            'f1_score': f1
+        }
+        
+        # Display results in metrics cards
+        self.display_model_results('lstm')
+        
+        # Plot training history
+        fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+        
+        # Accuracy plot
+        ax1 = axes[0]
+        ax1.plot(history.history['accuracy'], label='Training', linewidth=2, color='#10B981')
+        if 'val_accuracy' in history.history:
+            ax1.plot(history.history['val_accuracy'], label='Validation', linewidth=2, color='#3B82F6')
+        ax1.set_title('LSTM Accuracy History', fontsize=14, fontweight='bold')
+        ax1.set_xlabel('Epoch')
+        ax1.set_ylabel('Accuracy')
+        ax1.legend()
+        ax1.grid(True, alpha=0.3)
+        
+        # Loss plot
+        ax2 = axes[1]
+        ax2.plot(history.history['loss'], label='Training', linewidth=2, color='#EF4444')
+        if 'val_loss' in history.history:
+            ax2.plot(history.history['val_loss'], label='Validation', linewidth=2, color='#F59E0B')
+        ax2.set_title('LSTM Loss History', fontsize=14, fontweight='bold')
+        ax2.set_xlabel('Epoch')
+        ax2.set_ylabel('Loss')
+        ax2.legend()
+        ax2.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        st.pyplot(fig)
+        
+        st.markdown('</div>', unsafe_allow_html=True)
+        return model
     
-    def get_classification_report(self, model_type):
-        """Get classification report untuk model tertentu"""
-        if model_type not in self.evaluation_results:
-            return None
+    def train_gru(self, training_data, epochs=15, batch_size=32):
+        """Train GRU model"""
+        st.markdown('<div class="training-card gru-card">', unsafe_allow_html=True)
         
-        y_true = self.evaluation_results[model_type]['y_true']
-        y_pred = self.evaluation_results[model_type]['y_pred']
+        # Header with icon
+        col_header = st.columns([1, 8])
+        with col_header[0]:
+            st.markdown("<h2 style='margin:0;'>🌀</h2>", unsafe_allow_html=True)
+        with col_header[1]:
+            st.subheader("Training GRU Model")
         
-        return classification_report(y_true, y_pred, output_dict=True)
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        model = self.build_gru_model(training_data['vocab_size'])
+        
+        # Callbacks
+        early_stopping = EarlyStopping(monitor='val_loss', patience=3, restore_best_weights=True)
+        reduce_lr = ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=2, min_lr=0.00001)
+        
+        class GRUCallback(tf.keras.callbacks.Callback):
+            def on_epoch_end(self, epoch, logs=None):
+                progress = (epoch + 1) / epochs
+                progress_bar.progress(progress)
+                status_text.text(
+                    f"Epoch {epoch+1}/{epochs} - "
+                    f"Loss: {logs.get('loss', 0):.4f}, "
+                    f"Accuracy: {logs.get('accuracy', 0):.4f}"
+                )
+        
+        # Training
+        with st.spinner("Training GRU model..."):
+            history = model.fit(
+                training_data['X_train_seq'], training_data['y_train_txt'],
+                validation_data=(training_data['X_test_seq'], training_data['y_test_txt']),
+                epochs=epochs,
+                batch_size=batch_size,
+                class_weight=training_data.get('class_weights'),
+                verbose=0,
+                callbacks=[GRUCallback(), early_stopping, reduce_lr]
+            )
+        
+        progress_bar.progress(1.0)
+        status_text.text("✅ GRU Training Complete!")
+        
+        # Evaluate
+        eval_results = model.evaluate(
+            training_data['X_test_seq'], training_data['y_test_txt'], verbose=0
+        )
+        
+        metrics_dict = dict(zip(model.metrics_names, eval_results))
+        
+        self.models['gru'] = model
+        self.histories['gru'] = history.history
+        
+        # Calculate F1-score
+        f1 = 2 * (metrics_dict['precision'] * metrics_dict['recall']) / \
+             (metrics_dict['precision'] + metrics_dict['recall'] + 1e-7)
+        
+        self.results['gru'] = {
+            'accuracy': metrics_dict['accuracy'],
+            'precision': metrics_dict['precision'],
+            'recall': metrics_dict['recall'],
+            'auc': metrics_dict['auc'],
+            'loss': metrics_dict['loss'],
+            'f1_score': f1
+        }
+        
+        # Display results in metrics cards
+        self.display_model_results('gru')
+        
+        # Plot training history
+        fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+        
+        # Accuracy plot
+        ax1 = axes[0]
+        ax1.plot(history.history['accuracy'], label='Training', linewidth=2, color='#8B5CF6')
+        if 'val_accuracy' in history.history:
+            ax1.plot(history.history['val_accuracy'], label='Validation', linewidth=2, color='#3B82F6')
+        ax1.set_title('GRU Accuracy History', fontsize=14, fontweight='bold')
+        ax1.set_xlabel('Epoch')
+        ax1.set_ylabel('Accuracy')
+        ax1.legend()
+        ax1.grid(True, alpha=0.3)
+        
+        # Loss plot
+        ax2 = axes[1]
+        ax2.plot(history.history['loss'], label='Training', linewidth=2, color='#EF4444')
+        if 'val_loss' in history.history:
+            ax2.plot(history.history['val_loss'], label='Validation', linewidth=2, color='#F59E0B')
+        ax2.set_title('GRU Loss History', fontsize=14, fontweight='bold')
+        ax2.set_xlabel('Epoch')
+        ax2.set_ylabel('Loss')
+        ax2.legend()
+        ax2.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        st.pyplot(fig)
+        
+        st.markdown('</div>', unsafe_allow_html=True)
+        return model
+    
+    def display_model_results(self, model_name):
+        """Display model results in metric cards"""
+        if model_name not in self.results:
+            return
+        
+        results = self.results[model_name]
+        
+        # Create metric cards
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            accuracy_color = '#10b981' if results['accuracy'] > 0.8 else '#f59e0b' if results['accuracy'] > 0.6 else '#ef4444'
+            st.markdown(f"""
+            <div class="metric-card">
+                <div class="metric-label">Accuracy</div>
+                <div class="metric-value" style="color: {accuracy_color}">
+                    {results['accuracy']:.4f}
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        with col2:
+            precision_color = '#10b981' if results['precision'] > 0.8 else '#f59e0b' if results['precision'] > 0.6 else '#ef4444'
+            st.markdown(f"""
+            <div class="metric-card">
+                <div class="metric-label">Precision</div>
+                <div class="metric-value" style="color: {precision_color}">
+                    {results['precision']:.4f}
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        with col3:
+            recall_color = '#10b981' if results['recall'] > 0.8 else '#f59e0b' if results['recall'] > 0.6 else '#ef4444'
+            st.markdown(f"""
+            <div class="metric-card">
+                <div class="metric-label">Recall</div>
+                <div class="metric-value" style="color: {recall_color}">
+                    {results['recall']:.4f}
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        with col4:
+            f1_color = '#10b981' if results['f1_score'] > 0.8 else '#f59e0b' if results['f1_score'] > 0.6 else '#ef4444'
+            st.markdown(f"""
+            <div class="metric-card">
+                <div class="metric-label">F1-Score</div>
+                <div class="metric-value" style="color: {f1_color}">
+                    {results['f1_score']:.4f}
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
     
     def compare_models(self):
-        """Bandingkan semua model yang dievaluasi"""
-        if not self.evaluation_results:
+        """Bandingkan semua model"""
+        if not self.results:
             return None
         
         comparison_data = []
-        for model_name, results in self.evaluation_results.items():
+        for model_name, results in self.results.items():
             comparison_data.append({
                 'Model': model_name.upper(),
                 'Accuracy': results['accuracy'],
                 'Precision': results['precision'],
                 'Recall': results['recall'],
                 'F1-Score': results['f1_score'],
-                'AUC': results['auc']
+                'AUC': results.get('auc', 0),
+                'Loss': results['loss']
             })
         
         return pd.DataFrame(comparison_data)
     
     def get_best_model(self):
         """Dapatkan model terbaik berdasarkan F1-Score"""
-        if not self.evaluation_results:
-            return None
+        if not self.results:
+            return None, None
         
-        best_model = max(self.evaluation_results.items(), 
-                        key=lambda x: x[1]['f1_score'])
+        best_model = max(self.results.items(), key=lambda x: x[1]['f1_score'])
         return best_model[0], best_model[1]
 
-def plot_confusion_matrix(conf_matrix, model_name):
-    """Plot confusion matrix"""
-    fig, ax = plt.subplots(figsize=(6, 5))
-    
-    # Create heatmap
-    sns.heatmap(conf_matrix, annot=True, fmt='d', cmap='Blues', 
-                xticklabels=['Benign', 'Malicious'],
-                yticklabels=['Benign', 'Malicious'],
-                ax=ax)
-    
-    ax.set_xlabel('Predicted Label')
-    ax.set_ylabel('True Label')
-    ax.set_title(f'Confusion Matrix - {model_name.upper()}')
-    
-    return fig
-
-def plot_metrics_comparison(comparison_df):
-    """Plot perbandingan metrics antar model"""
-    fig, axes = plt.subplots(2, 3, figsize=(15, 10))
-    
-    metrics = ['Accuracy', 'Precision', 'Recall', 'F1-Score', 'AUC']
-    colors = {'CNN': '#3B82F6', 'LSTM': '#10B981', 'GRU': '#8B5CF6'}
-    
-    for idx, metric in enumerate(metrics):
-        ax = axes[idx // 3, idx % 3]
-        
-        if metric in comparison_df.columns:
-            models = comparison_df['Model']
-            values = comparison_df[metric]
-            
-            bar_colors = [colors.get(model, 'gray') for model in models]
-            bars = ax.bar(models, values, color=bar_colors)
-            
-            ax.set_title(f'{metric} Comparison')
-            ax.set_ylabel('Score')
-            ax.set_ylim([0, 1.05])
-            
-            # Add value labels on bars
-            for bar in bars:
-                height = bar.get_height()
-                ax.text(bar.get_x() + bar.get_width()/2., height,
-                       f'{height:.3f}', ha='center', va='bottom')
-        
-        ax.grid(True, alpha=0.3)
-    
-    # Hide empty subplot
-    axes[1, 2].set_visible(False)
-    
-    plt.tight_layout()
-    return fig
 
 def main():
-    # Inisialisasi evaluator di session state
-    if 'evaluator' not in st.session_state:
-        st.session_state.evaluator = ModelEvaluator()
-    
-    evaluator = st.session_state.evaluator
-    
-    st.markdown('<div class="hero-container">', unsafe_allow_html=True)
-    st.markdown('<h1 class="hero-title">📊 QR Code Model Evaluator</h1>', unsafe_allow_html=True)
-    st.markdown('<p class="hero-subtitle">Upload pretrained models and evaluate performance without training</p>', unsafe_allow_html=True)
-    st.markdown('</div>', unsafe_allow_html=True)
-    
+    st.markdown("""
+    <div class="hero-container">
+        <h1 class="hero-title">🤖 QR Code Security Analyzer</h1>
+        <p class="hero-subtitle">
+            Combine CNN (Offline Results) with LSTM & GRU Training
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+
     processor = DatasetProcessor()
-    
+    trainer = CompleteModelTrainer()
+
     with st.sidebar:
-        st.header("📁 Dataset Evaluasi")
+        st.header("📁 Dataset Configuration")
         
-        uploaded_eval_zip = st.file_uploader(
-            "Upload dataset ZIP untuk evaluasi",
+        uploaded_file = st.file_uploader(
+            "Upload dataset ZIP",
             type=['zip'],
-            key="dataset_uploader",
-            help="Berisi folder 'benign' dan 'malicious' dengan gambar QR code"
+            help="Must contain 'benign' and 'malicious' folders"
         )
         
-        if uploaded_eval_zip:
-            with st.spinner("Memproses dataset evaluasi..."):
-                eval_dataset_info = processor.process_zip_file(uploaded_eval_zip)
-                if eval_dataset_info:
-                    st.success("✅ Dataset evaluasi siap!")
-                    st.session_state['eval_dataset_info'] = eval_dataset_info
+        if uploaded_file:
+            with st.spinner("Processing dataset..."):
+                dataset_info = processor.process_zip_file(uploaded_file)
+                if dataset_info and dataset_info['total_images'] > 0:
+                    st.success(f"✅ {dataset_info['total_images']} images loaded")
+                    st.session_state['dataset_info'] = dataset_info
+                else:
+                    st.error("❌ Invalid dataset")
+        
+        st.subheader("📊 CNN Offline Results")
+        
+        cnn_eval_file = st.file_uploader(
+            "Upload cnn_eval.json",
+            type=["json"],
+            help="Upload JSON file with CNN evaluation results"
+        )
+        
+        cnn_history_file = st.file_uploader(
+            "Upload cnn_history.json",
+            type=["json"],
+            help="Upload JSON file with CNN training history"
+        )
+        
+        st.markdown('</div>', unsafe_allow_html=True)
+        
+        st.subheader("🤖 Models to Train")
+        selected_models = st.multiselect(
+            "Select models to train:",
+            ["LSTM", "GRU"],
+            default=["LSTM", "GRU"],
+            help="CNN results will be loaded from uploaded JSON files"
+        )
         
         st.markdown("---")
-        st.header("🚀 Start Evaluation")
+        st.header("⚙️ Training Parameters")
         
-        # Cek apakah ada model yang di-load
-        models_loaded = bool(evaluator.models)
-        dataset_loaded = 'eval_dataset_info' in st.session_state
+        use_synthetic = st.checkbox("Use Synthetic Text Data", value=True,
+                                    help="Generate synthetic QR text if decoding fails")
         
-        col1, col2 = st.columns(2)
-        with col1:
-            st.metric("Models Loaded", len(evaluator.models))
-        with col2:
-            st.metric("Dataset Ready", "✅" if dataset_loaded else "❌")
+        epochs = st.slider("Training Epochs", 5, 30, 10,
+                          help="Number of training epochs for LSTM/GRU")
         
-        if st.button("📊 Evaluate All Models", type="primary", use_container_width=True):
-            if models_loaded and dataset_loaded:
-                st.session_state['start_evaluation'] = True
-                st.rerun()
+        batch_size = st.slider("Batch Size", 16, 64, 32,
+                              help="Batch size for LSTM/GRU training")
+        
+        if st.button("🚀 Start Training & Analysis", type="primary", use_container_width=True):
+            if 'dataset_info' not in st.session_state:
+                st.warning("Please upload dataset first!")
+            elif not cnn_eval_file or not cnn_history_file:
+                st.warning("Please upload both CNN JSON files!")
             else:
-                if not models_loaded:
-                    st.error("Please load at least one model in the 'Load Models' tab!")
-                if not dataset_loaded:
-                    st.error("Please upload evaluation dataset first!")
+                st.session_state['selected_models'] = selected_models
+                st.session_state['cnn_eval_file'] = cnn_eval_file
+                st.session_state['cnn_history_file'] = cnn_history_file
+                st.session_state['training_params'] = {
+                    'epochs': epochs,
+                    'batch_size': batch_size,
+                    'use_synthetic': use_synthetic
+                }
+                st.session_state['start_training'] = True
         
         st.markdown("---")
-        st.header("🔄 Reset App")
-        if st.button("Clear All Models & Data"):
+        st.header("💡 Quick Tips")
+        with st.expander("How to prepare CNN JSON files"):
+            st.markdown("""
+            **In Colab/Jupyter:**
+            ```python
+            import json
+            
+            # Save evaluation results
+            cnn_eval = {
+                'accuracy': 0.95,
+                'precision': 0.94,
+                'recall': 0.93,
+                'f1_score': 0.935,
+                'auc': 0.98,
+                'loss': 0.15
+            }
+            
+            with open('cnn_eval.json', 'w') as f:
+                json.dump(cnn_eval, f)
+            
+            # Save training history
+            cnn_history = {
+                'accuracy': [0.85, 0.90, 0.92, 0.94, 0.95],
+                'val_accuracy': [0.82, 0.87, 0.90, 0.92, 0.93],
+                'loss': [0.45, 0.30, 0.22, 0.18, 0.15],
+                'val_loss': [0.48, 0.32, 0.25, 0.20, 0.17]
+            }
+            
+            with open('cnn_history.json', 'w') as f:
+                json.dump(cnn_history, f)
+            ```
+            """)
+        
+        st.markdown("---")
+        if st.button("🔄 Reset Application", use_container_width=True):
+            st.cache_data.clear()
+            st.cache_resource.clear()
             st.session_state.clear()
             st.rerun()
-    
-    tab1, tab2, tab3, tab4 = st.tabs(["📋 Model Status", "🎯 Load Models", "📈 Evaluation", "📊 Comparison"])
-    
-    # --- TAB 1: Model Status ---
-    with tab1:
-        st.header("📋 Loaded Models Status")
-        
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            st.markdown('<div class="model-card cnn-card">', unsafe_allow_html=True)
-            st.subheader("🎯 CNN Model")
-            if 'cnn' in evaluator.models:
-                st.success("✅ Model Loaded")
-                st.write(f"Layers: {len(evaluator.models['cnn'].layers)}")
-                st.write(f"Parameters: {evaluator.models['cnn'].count_params():,}")
-                # Tampilkan arsitektur singkat
-                with st.expander("View Architecture"):
-                    evaluator.display_model_architecture(evaluator.models['cnn'], 'cnn')
-            else:
-                st.info("⏳ No model loaded")
-                st.write("Go to 'Load Models' tab to upload CNN model")
-            st.markdown('</div>', unsafe_allow_html=True)
-        
-        with col2:
-            st.markdown('<div class="model-card lstm-card">', unsafe_allow_html=True)
-            st.subheader("📝 LSTM Model")
-            if 'lstm' in evaluator.models:
-                st.success("✅ Model Loaded")
-                st.write(f"Layers: {len(evaluator.models['lstm'].layers)}")
-                st.write(f"Parameters: {evaluator.models['lstm'].count_params():,}")
-                with st.expander("View Architecture"):
-                    evaluator.display_model_architecture(evaluator.models['lstm'], 'lstm')
-            else:
-                st.info("⏳ No model loaded")
-                st.write("Go to 'Load Models' tab to upload LSTM model")
-            st.markdown('</div>', unsafe_allow_html=True)
-        
-        with col3:
-            st.markdown('<div class="model-card gru-card">', unsafe_allow_html=True)
-            st.subheader("🌀 GRU Model")
-            if 'gru' in evaluator.models:
-                st.success("✅ Model Loaded")
-                st.write(f"Layers: {len(evaluator.models['gru'].layers)}")
-                st.write(f"Parameters: {evaluator.models['gru'].count_params():,}")
-                with st.expander("View Architecture"):
-                    evaluator.display_model_architecture(evaluator.models['gru'], 'gru')
-            else:
-                st.info("⏳ No model loaded")
-                st.write("Go to 'Load Models' tab to upload GRU model")
-            st.markdown('</div>', unsafe_allow_html=True)
-        
-        # Dataset Status
-        st.markdown("---")
-        st.header("📁 Evaluation Dataset Status")
-        
-        if 'eval_dataset_info' in st.session_state:
-            eval_info = st.session_state['eval_dataset_info']
-            
-            col1, col2, col3 = st.columns(3)
-            
-            with col1:
-                st.metric("Benign Path", "✅ Ready" if eval_info['benign_path'] else "❌ Not Found")
-            
-            with col2:
-                st.metric("Malicious Path", "✅ Ready" if eval_info['malicious_path'] else "❌ Not Found")
-            
-            with col3:
-                if eval_info['benign_path'] and os.path.exists(eval_info['benign_path']):
-                    benign_count = len([f for f in os.listdir(eval_info['benign_path']) 
-                                      if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp'))])
-                    st.metric("Benign Samples", benign_count)
-                else:
-                    st.metric("Benign Samples", 0)
-            
-            if eval_info['malicious_path'] and os.path.exists(eval_info['malicious_path']):
-                malicious_count = len([f for f in os.listdir(eval_info['malicious_path']) 
-                                     if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp'))])
-                
-                col4, col5 = st.columns(2)
-                with col4:
-                    st.metric("Malicious Samples", malicious_count)
-                
-                with col5:
-                    total_samples = benign_count + malicious_count if 'benign_count' in locals() else malicious_count
-                    st.metric("Total Samples", total_samples)
-            else:
-                st.warning("Malicious folder not found")
-        else:
-            st.info("👈 Upload evaluation dataset in the sidebar")
-    
-    # --- TAB 2: Load Models ---
-    with tab2:
-        st.header("🎯 Load Research Models")
-        st.info("Upload your trained models here. Each model type has its own upload section.")
-        
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            st.markdown('<div class="model-card cnn-card">', unsafe_allow_html=True)
-            st.subheader("📷 CNN Model")
-            st.write("Visual-based QR code detection")
-            st.write("**Expected Architecture:**")
-            st.write("- Conv2D → MaxPooling2D")
-            st.write("- Conv2D → MaxPooling2D")
-            st.write("- Flatten → Dense → Output")
-            
-            uploaded_cnn = st.file_uploader(
-                "Upload CNN model (.h5/.keras)",
-                type=["h5", "keras"],
-                key="upload_cnn_tab",
-                help="Upload your trained CNN model file"
-            )
-            
-            if uploaded_cnn and st.button("✅ Load CNN Model", key="load_cnn_tab", use_container_width=True):
-                with st.spinner("Loading CNN model..."):
-                    if evaluator.load_model_quishing_specific('cnn', uploaded_cnn):
-                        st.success("CNN model loaded successfully!")
-                        st.balloons()
-            st.markdown('</div>', unsafe_allow_html=True)
-        
-        with col2:
-            st.markdown('<div class="model-card lstm-card">', unsafe_allow_html=True)
-            st.subheader("📝 LSTM Model")
-            st.write("URL/text sequence detection")
-            st.write("**Expected Architecture:**")
-            st.write("- Embedding layer")
-            st.write("- LSTM with GlobalMaxPooling1D")
-            st.write("- Dense layers → Output")
-            
-            uploaded_lstm = st.file_uploader(
-                "Upload LSTM model (.h5/.keras)",
-                type=["h5", "keras"],
-                key="upload_lstm_tab",
-                help="Upload your trained LSTM model file"
-            )
-            
-            if uploaded_lstm and st.button("✅ Load LSTM Model", key="load_lstm_tab", use_container_width=True):
-                with st.spinner("Loading LSTM model..."):
-                    if evaluator.load_model_quishing_specific('lstm', uploaded_lstm):
-                        st.success("LSTM model loaded successfully!")
-                        st.balloons()
-            st.markdown('</div>', unsafe_allow_html=True)
-        
-        with col3:
-            st.markdown('<div class="model-card gru-card">', unsafe_allow_html=True)
-            st.subheader("🌀 GRU Model")
-            st.write("URL/text sequence detection")
-            st.write("**Expected Architecture:**")
-            st.write("- Embedding layer")
-            st.write("- GRU with GlobalMaxPooling1D")
-            st.write("- Dense layers → Output")
-            
-            uploaded_gru = st.file_uploader(
-                "Upload GRU model (.h5/.keras)",
-                type=["h5", "keras"],
-                key="upload_gru_tab",
-                help="Upload your trained GRU model file"
-            )
-            
-            if uploaded_gru and st.button("✅ Load GRU Model", key="load_gru_tab", use_container_width=True):
-                with st.spinner("Loading GRU model..."):
-                    if evaluator.load_model_quishing_specific('gru', uploaded_gru):
-                        st.success("GRU model loaded successfully!")
-                        st.balloons()
-            st.markdown('</div>', unsafe_allow_html=True)
-        
-        st.markdown("---")
-        st.header("📊 Current Load Status")
-        st.write(f"**Total models loaded:** {len(evaluator.models)}")
-        
-        if evaluator.models:
-            for model_name, model in evaluator.models.items():
-                st.write(f"- **{model_name.upper()}**: {model.count_params():,} parameters")
 
-    # --- TAB 3: Evaluation ---
-    with tab3:
-        st.header("📈 Model Evaluation")
+    # Main content tabs
+    tab1, tab2, tab3, tab4 = st.tabs(["📊 Dataset", "🤖 Training", "📈 Results", "💾 Download"])
+
+    # --- TAB 1: Dataset ---
+    with tab1:
+        st.header("📊 Dataset Information")
         
-        if 'start_evaluation' in st.session_state and st.session_state['start_evaluation']:
-            if 'eval_dataset_info' not in st.session_state:
-                st.error("Evaluation dataset not found!")
-                st.stop()
+        if 'dataset_info' in st.session_state:
+            dataset_info = st.session_state['dataset_info']
             
-            eval_dataset_info = st.session_state['eval_dataset_info']
+            # Dataset metrics
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("Total Images", dataset_info['total_images'])
+            with col2:
+                st.metric("Benign Images", dataset_info['benign_count'])
+            with col3:
+                st.metric("Malicious Images", dataset_info['malicious_count'])
+            with col4:
+                ratio = dataset_info['benign_count'] / dataset_info['total_images'] * 100 if dataset_info['total_images'] > 0 else 0
+                st.metric("Benign Ratio", f"{ratio:.1f}%")
             
-            with st.spinner("🔄 Preparing evaluation data..."):
-                evaluation_data = processor.prepare_evaluation_data(eval_dataset_info, max_samples=50)
-                
-                if evaluation_data is None:
-                    st.error("Failed to prepare evaluation data!")
+            # Sample images
+            if dataset_info['benign_samples']:
+                st.subheader("✅ Benign QR Samples")
+                cols = st.columns(min(5, len(dataset_info['benign_samples'])))
+                for idx, img_path in enumerate(dataset_info['benign_samples']):
+                    with cols[idx]:
+                        try:
+                            img = Image.open(img_path)
+                            img.thumbnail((150, 150))
+                            st.image(img, caption=f"Sample {idx+1}", use_container_width=True)
+                        except:
+                            st.warning(f"Could not load image {idx+1}")
+            
+            if dataset_info['malicious_samples']:
+                st.subheader("❌ Malicious QR Samples")
+                cols = st.columns(min(5, len(dataset_info['malicious_samples'])))
+                for idx, img_path in enumerate(dataset_info['malicious_samples']):
+                    with cols[idx]:
+                        try:
+                            img = Image.open(img_path)
+                            img.thumbnail((150, 150))
+                            st.image(img, caption=f"Sample {idx+1}", use_container_width=True)
+                        except:
+                            st.warning(f"Could not load image {idx+1}")
+        else:
+            st.info("👈 Please upload dataset ZIP file in the sidebar")
+
+    # --- TAB 2: Training ---
+    with tab2:
+        st.header("🤖 Model Training & Analysis")
+        
+        if 'start_training' in st.session_state and st.session_state['start_training']:
+            if 'dataset_info' not in st.session_state:
+                st.error("Dataset not found. Please upload dataset first.")
+                return
+            
+            dataset_info = st.session_state['dataset_info']
+            selected_models = st.session_state.get('selected_models', [])
+            params = st.session_state.get('training_params', {})
+            cnn_eval_file = st.session_state.get('cnn_eval_file')
+            cnn_history_file = st.session_state.get('cnn_history_file')
+            
+            # Clear previous results
+            if 'training_complete' in st.session_state:
+                del st.session_state['training_complete']
+            
+            # Step 1: Load CNN results
+            st.markdown("### Step 1: Loading CNN Offline Results")
+            st.markdown('<div class="training-card cnn-card">', unsafe_allow_html=True)
+            
+            with st.spinner("Loading CNN results from JSON files..."):
+                if trainer.load_cnn_offline_results(cnn_eval_file, cnn_history_file):
+                    st.success("✅ CNN results loaded successfully!")
+                    trainer.display_cnn_results()
+                else:
+                    st.error("❌ Failed to load CNN results")
                     st.stop()
             
-            # Evaluate each loaded model
-            progress_bar = st.progress(0)
-            status_text = st.empty()
+            st.markdown('</div>', unsafe_allow_html=True)
             
-            models_to_evaluate = list(evaluator.models.keys())
+            # Step 2: Prepare training data
+            st.markdown("### Step 2: Preparing Training Data")
+            with st.spinner("Preparing training data for LSTM/GRU..."):
+                try:
+                    training_data = processor.prepare_training_data(
+                        dataset_info,
+                        use_synthetic=params['use_synthetic']
+                    )
+                    
+                    if training_data is None:
+                        st.error("❌ Failed to prepare training data")
+                        st.stop()
+                    
+                    st.success(f"✅ Prepared {training_data['total_samples']} samples")
+                    st.info(f"📝 Vocabulary size: {training_data['vocab_size']}")
+                    st.info(f"⚖️ Label distribution: {training_data['label_distribution']}")
+                    
+                except Exception as e:
+                    st.error(f"❌ Error preparing training data: {e}")
+                    st.stop()
             
-            if not models_to_evaluate:
-                st.error("No models loaded to evaluate!")
-                st.stop()
+            # Step 3: Train selected models
+            st.markdown("### Step 3: Training Selected Models")
             
-            for idx, model_type in enumerate(models_to_evaluate):
-                status_text.text(f"Evaluating {model_type.upper()} model...")
-                
-                if evaluator.evaluate_model(model_type, evaluation_data):
-                    st.success(f"✅ {model_type.upper()} evaluation completed!")
+            if "LSTM" in selected_models:
+                if training_data['vocab_size'] > 1:
+                    try:
+                        trainer.train_lstm(training_data, 
+                                        epochs=params['epochs'], 
+                                        batch_size=params['batch_size'])
+                    except Exception as e:
+                        st.error(f"❌ LSTM training failed: {e}")
                 else:
-                    st.error(f"❌ {model_type.upper()} evaluation failed!")
+                    st.warning("⚠️ No text data for LSTM training")
+            
+            if "GRU" in selected_models:
+                if training_data['vocab_size'] > 1:
+                    try:
+                        trainer.train_gru(training_data, 
+                                        epochs=params['epochs'], 
+                                        batch_size=params['batch_size'])
+                    except Exception as e:
+                        st.error(f"❌ GRU training failed: {e}")
+                else:
+                    st.warning("⚠️ No text data for GRU training")
+            
+            # Mark training complete
+            if trainer.results:
+                st.session_state['training_complete'] = True
+                st.session_state['trainer'] = trainer
+                st.balloons()
                 
-                progress_bar.progress((idx + 1) / len(models_to_evaluate))
+                # Cleanup temp directory
+                if 'temp_dir' in dataset_info:
+                    try:
+                        shutil.rmtree(dataset_info['temp_dir'], ignore_errors=True)
+                    except:
+                        pass
             
-            progress_bar.progress(1.0)
-            status_text.text("✅ All evaluations completed!")
-            
-            # Display results for each model
-            for model_type in models_to_evaluate:
-                if model_type in evaluator.evaluation_results:
-                    results = evaluator.evaluation_results[model_type]
-                    
-                    if model_type == 'cnn':
-                        st.markdown('<div class="model-card cnn-card">', unsafe_allow_html=True)
-                    elif model_type == 'lstm':
-                        st.markdown('<div class="model-card lstm-card">', unsafe_allow_html=True)
-                    elif model_type == 'gru':
-                        st.markdown('<div class="model-card gru-card">', unsafe_allow_html=True)
-                    
-                    st.subheader(f"{model_type.upper()} Results")
-                    
-                    # Metrics in columns
-                    col1, col2, col3, col4, col5 = st.columns(5)
-                    with col1: st.metric("Accuracy", f"{results['accuracy']:.4f}")
-                    with col2: st.metric("Precision", f"{results['precision']:.4f}")
-                    with col3: st.metric("Recall", f"{results['recall']:.4f}")
-                    with col4: st.metric("F1-Score", f"{results['f1_score']:.4f}")
-                    with col5: st.metric("AUC", f"{results['auc']:.4f}")
-                    
-                    # Confusion Matrix
-                    conf_matrix = evaluator.get_confusion_matrix(model_type)
-                    if conf_matrix is not None:
-                        fig_cm = plot_confusion_matrix(conf_matrix, model_type)
-                        st.pyplot(fig_cm)
-                    
-                    st.markdown('</div>', unsafe_allow_html=True)
-            
-            # Store evaluator in session state
-            st.session_state['evaluator'] = evaluator
-            st.session_state['evaluation_complete'] = True
-            
-            # Cleanup temp directory
-            try:
-                if 'temp_dir' in eval_dataset_info:
-                    shutil.rmtree(eval_dataset_info['temp_dir'], ignore_errors=True)
-            except:
-                pass
-            
-            # Reset evaluation flag
-            st.session_state['start_evaluation'] = False
+            # Reset training flag
+            st.session_state['start_training'] = False
             
         else:
-            st.info("👈 **Steps to evaluate:**")
-            st.write("1. Go to 'Load Models' tab and upload at least one model")
-            st.write("2. Upload evaluation dataset in the sidebar")
-            st.write("3. Click 'Evaluate All Models' button in the sidebar")
-            
-            # Show current status
-            col1, col2 = st.columns(2)
-            with col1:
-                st.metric("Models Ready", len(evaluator.models), 
-                         delta="Upload in 'Load Models' tab" if len(evaluator.models) == 0 else None)
-            with col2:
-                dataset_ready = 'eval_dataset_info' in st.session_state
-                st.metric("Dataset Ready", "✅ Yes" if dataset_ready else "❌ No")
-    
-    # --- TAB 4: Comparison ---
-    with tab4:
-        st.header("📊 Model Comparison")
+            st.info("👈 Configure models and click 'Start Training & Analysis' in the sidebar")
+
+    # --- TAB 3: Results ---
+    with tab3:
+        st.header("📈 Model Comparison & Analysis")
         
-        if st.session_state.get('evaluation_complete', False):
-            evaluator = st.session_state.get('evaluator')
+        if st.session_state.get('training_complete'):
+            trainer = st.session_state.get('trainer')
             
-            if evaluator and evaluator.evaluation_results:
-                # Comparison Table
-                comparison_df = evaluator.compare_models()
-                
-                if comparison_df is not None:
-                    # Format the dataframe for display
-                    display_df = comparison_df.copy()
-                    for col in ['Accuracy', 'Precision', 'Recall', 'F1-Score', 'AUC']:
-                        display_df[col] = display_df[col].apply(lambda x: f"{x:.4f}")
-                    
-                    st.dataframe(display_df, use_container_width=True)
-                    
-                    # Best Model
-                    best_model_name, best_model_results = evaluator.get_best_model()
-                    
+            if trainer and trainer.results:
+                # Best model banner
+                best_model_name, best_model_results = trainer.get_best_model()
+                if best_model_name and best_model_results:
                     st.markdown(f"""
-                    <div class="best-model">
-                        <h3>🏆 Best Model: {best_model_name.upper()}</h3>
-                        <p>F1-Score: <strong>{best_model_results['f1_score']:.4f}</strong> | 
-                        Accuracy: <strong>{best_model_results['accuracy']:.4f}</strong> | 
-                        AUC: <strong>{best_model_results['auc']:.4f}</strong></p>
+                    <div class="best-model-banner">
+                        <h3 style="margin:0 0 1rem 0;">🏆 Best Model: {best_model_name.upper()}</h3>
+                        <div style="display: flex; justify-content: center; gap: 2rem; margin-top: 1rem;">
+                            <div style="text-align: center;">
+                                <div style="font-size: 0.9rem; color: #64748b;">Accuracy</div>
+                                <div style="font-size: 1.8rem; font-weight: 700; color: #10b981;">
+                                    {best_model_results['accuracy']:.4f}
+                                </div>
+                            </div>
+                            <div style="text-align: center;">
+                                <div style="font-size: 0.9rem; color: #64748b;">F1-Score</div>
+                                <div style="font-size: 1.8rem; font-weight: 700; color: #10b981;">
+                                    {best_model_results['f1_score']:.4f}
+                                </div>
+                            </div>
+                            <div style="text-align: center;">
+                                <div style="font-size: 0.9rem; color: #64748b;">AUC</div>
+                                <div style="font-size: 1.8rem; font-weight: 700; color: #10b981;">
+                                    {best_model_results.get('auc', 0):.4f}
+                                </div>
+                            </div>
+                        </div>
                     </div>
                     """, unsafe_allow_html=True)
+                
+                # Comparison table
+                st.subheader("📊 Model Performance Comparison")
+                comparison_df = trainer.compare_models()
+                if comparison_df is not None:
+                    # Style the dataframe
+                    styled_df = comparison_df.copy()
+                    styled_df = styled_df.round(4)
                     
-                    # Visual Comparison
-                    st.subheader("📈 Visual Comparison")
-                    fig_comparison = plot_metrics_comparison(comparison_df)
-                    st.pyplot(fig_comparison)
+                    # Color code based on values
+                    def color_cells(val):
+                        if isinstance(val, (int, float)):
+                            if val >= 0.9:
+                                return 'background-color: #dcfce7; color: #166534;'
+                            elif val >= 0.8:
+                                return 'background-color: #fef9c3; color: #854d0e;'
+                            elif val >= 0.7:
+                                return 'background-color: #fee2e2; color: #991b1b;'
+                        return ''
                     
-                    # Download Results
-                    st.markdown("---")
-                    st.subheader("💾 Download Results")
+                    # Apply styling
+                    numeric_cols = ['Accuracy', 'Precision', 'Recall', 'F1-Score', 'AUC']
+                    styled_df = styled_df.style.applymap(color_cells, subset=numeric_cols)
+                    
+                    st.dataframe(styled_df, use_container_width=True)
+                
+                # Visual comparison
+                st.subheader("📈 Performance Visualization")
+                if trainer.results:
+                    fig, axes = plt.subplots(2, 3, figsize=(16, 10))
+                    models = list(trainer.results.keys())
+                    
+                    # Define colors for each model
+                    colors = {
+                        'cnn': '#3B82F6',  # Blue
+                        'lstm': '#10B981',  # Green
+                        'gru': '#8B5CF6'    # Purple
+                    }
+                    
+                    metrics_to_plot = [
+                        ('Accuracy', 'accuracy'),
+                        ('Precision', 'precision'),
+                        ('Recall', 'recall'),
+                        ('F1-Score', 'f1_score'),
+                        ('AUC', 'auc'),
+                        ('Loss', 'loss')
+                    ]
+                    
+                    for idx, (title, metric_key) in enumerate(metrics_to_plot):
+                        ax = axes[idx // 3, idx % 3]
+                        values = [trainer.results[m].get(metric_key, 0) for m in models]
+                        bar_colors = [colors.get(m, '#94a3b8') for m in models]
+                        bars = ax.bar(models, values, color=bar_colors, edgecolor='black')
+                        
+                        ax.set_title(title, fontsize=14, fontweight='bold')
+                        ax.set_ylabel('Score' if metric_key != 'loss' else 'Loss', fontsize=12)
+                        
+                        if metric_key != 'loss':
+                            ax.set_ylim([0, 1])
+                            ax.axhline(y=0.9, color='#10b981', linestyle='--', alpha=0.3, label='Excellent')
+                            ax.axhline(y=0.8, color='#f59e0b', linestyle='--', alpha=0.3, label='Good')
+                            ax.axhline(y=0.7, color='#ef4444', linestyle='--', alpha=0.3, label='Poor')
+                        else:
+                            ax.set_ylim([0, max(values) * 1.2])
+                        
+                        # Add value labels on bars
+                        for bar in bars:
+                            height = bar.get_height()
+                            ax.text(bar.get_x() + bar.get_width()/2., height,
+                                   f'{height:.3f}', ha='center', va='bottom',
+                                   fontweight='bold')
+                        
+                        ax.grid(True, alpha=0.2)
+                        if idx == 5:  # Only add legend to last plot
+                            ax.legend(loc='upper right')
+                    
+                    plt.tight_layout()
+                    st.pyplot(fig)
+                    
+            else:
+                st.info("No training results available yet.")
+        else:
+            st.info("Complete training to see results here.")
+
+    # --- TAB 4: Download ---
+    with tab4:
+        st.header("💾 Download Results & Models")
+        
+        if st.session_state.get('training_complete'):
+            trainer = st.session_state.get('trainer')
+            
+            if trainer:
+                # Save trained models
+                os.makedirs('models', exist_ok=True)
+                saved_files = {}
+                
+                # Save LSTM and GRU models
+                for model_name, model in trainer.models.items():
+                    if model_name in ['lstm', 'gru']:
+                        filename = f"models/{model_name}_model.h5"
+                        model.save(filename)
+                        saved_files[model_name] = filename
+                
+                # Download trained models
+                st.subheader("📥 Download Trained Models")
+                if saved_files:
+                    cols = st.columns(len(saved_files))
+                    for idx, (model_name, filepath) in enumerate(saved_files.items()):
+                        with cols[idx]:
+                            model_display_name = model_name.upper()
+                            with open(filepath, 'rb') as f:
+                                st.download_button(
+                                    label=f"Download {model_display_name}",
+                                    data=f.read(),
+                                    file_name=f"{model_name}_model.h5",
+                                    mime="application/octet-stream",
+                                    use_container_width=True
+                                )
+                else:
+                    st.info("No models available for download.")
+                
+                # Download results
+                st.subheader("📊 Download Results")
+                if trainer.results:
+                    # Create comparison CSV
+                    comparison_df = trainer.compare_models()
+                    csv = comparison_df.to_csv(index=False)
                     
                     col1, col2 = st.columns(2)
                     
                     with col1:
-                        # Download CSV
-                        csv = comparison_df.to_csv(index=False)
                         st.download_button(
-                            label="📊 Download Results as CSV",
+                            label="📄 Download Results CSV",
                             data=csv,
-                            file_name="model_evaluation_results.csv",
+                            file_name="model_comparison.csv",
                             mime="text/csv",
                             use_container_width=True
                         )
                     
                     with col2:
-                        # Download Report
-                        report_text = "QR Code Model Evaluation Report\n"
-                        report_text += "=" * 40 + "\n\n"
-                        
-                        for model_name, results in evaluator.evaluation_results.items():
-                            report_text += f"{model_name.upper()} Model\n"
-                            report_text += "-" * 20 + "\n"
-                            report_text += f"Accuracy:  {results['accuracy']:.4f}\n"
-                            report_text += f"Precision: {results['precision']:.4f}\n"
-                            report_text += f"Recall:    {results['recall']:.4f}\n"
-                            report_text += f"F1-Score:  {results['f1_score']:.4f}\n"
-                            report_text += f"AUC:       {results['auc']:.4f}\n\n"
+                        # Create JSON summary
+                        summary = {
+                            'best_model': trainer.get_best_model()[0],
+                            'results': trainer.results,
+                            'timestamp': time.strftime("%Y-%m-%d %H:%M:%S")
+                        }
+                        json_data = json.dumps(summary, indent=2)
                         
                         st.download_button(
-                            label="📄 Download Text Report",
-                            data=report_text,
-                            file_name="model_evaluation_report.txt",
-                            mime="text/plain",
+                            label="📋 Download Summary JSON",
+                            data=json_data,
+                            file_name="training_summary.json",
+                            mime="application/json",
                             use_container_width=True
                         )
-            else:
-                st.info("No evaluation results yet. Run evaluation first in the 'Evaluation' tab.")
+                
+                # Download all as ZIP
+                st.subheader("📦 Download Everything")
+                if st.button("🗂️ Create Complete Package", use_container_width=True):
+                    # Create ZIP file
+                    zip_filename = "qr_analysis_package.zip"
+                    with zipfile.ZipFile(zip_filename, 'w') as zf:
+                        # Add models
+                        for model_name, filepath in saved_files.items():
+                            if os.path.exists(filepath):
+                                zf.write(filepath, f"models/{model_name}_model.h5")
+                        
+                        # Add results CSV
+                        if trainer.results:
+                            zf.writestr("results/model_comparison.csv", comparison_df.to_csv(index=False))
+                            zf.writestr("results/summary.json", json.dumps(summary, indent=2))
+                        
+                        # Add README
+                        readme_content = f"""
+QR Code Security Analysis Package
+Generated: {time.strftime("%Y-%m-%d %H:%M:%S")}
+
+Contents:
+1. models/ - Trained LSTM and GRU models
+2. results/ - Performance comparison and summary
+
+Best Model: {trainer.get_best_model()[0].upper()}
+"""
+                        zf.writestr("README.txt", readme_content)
+                    
+                    # Offer download
+                    with open(zip_filename, 'rb') as f:
+                        st.download_button(
+                            label="⬇️ Download Complete Package",
+                            data=f.read(),
+                            file_name=zip_filename,
+                            mime="application/zip",
+                            use_container_width=True
+                        )
         else:
-            st.info("👈 **Run evaluation first to see comparison results.**")
-            st.write("1. Complete evaluation in the 'Evaluation' tab")
-            st.write("2. Results will appear here automatically")
+            st.info("Complete training to download models and results.")
 
 if __name__ == "__main__":
+    os.makedirs('models', exist_ok=True)
+    os.makedirs('results', exist_ok=True)
     main()
