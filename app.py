@@ -1,6 +1,6 @@
 """
-QR Code Security Analyzer - MODEL RESULTS DISPLAY ONLY
-[Hanya upload dan tampilkan hasil CNN, LSTM, GRU tanpa training]
+QR Code Security Analyzer - DATASET PREVIEW + MODEL RESULTS ONLY
+[Upload dataset untuk preview, upload model results untuk analisis, NO TRAINING]
 """
 import streamlit as st
 import pandas as pd
@@ -8,6 +8,11 @@ import numpy as np
 import json
 import os
 import time
+import cv2
+import zipfile
+import tempfile
+import shutil
+from PIL import Image
 import matplotlib.pyplot as plt
 import plotly.graph_objects as go
 import plotly.express as px
@@ -17,7 +22,7 @@ warnings.filterwarnings('ignore')
 
 # === PAGE CONFIG ===
 st.set_page_config(
-    page_title="QR Code Model Results Viewer",
+    page_title="QR Code Model Results & Dataset Viewer",
     page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -78,6 +83,15 @@ body, .stApp, [class*="css"] {
     color: #4b5563;
     max-width: 700px;
     margin: 0.5rem auto 0;
+}
+
+/* Dataset Card */
+.dataset-card {
+    background: var(--gray-100);
+    border-radius: 16px;
+    padding: 1.25rem;
+    margin: 1rem 0;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.05);
 }
 
 /* Model Card */
@@ -213,8 +227,245 @@ body, .stApp, [class*="css"] {
     padding: 1rem;
     margin: 1rem 0;
 }
+
+/* Image Gallery */
+.image-gallery {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 1rem;
+    margin: 1rem 0;
+}
+.image-container {
+    border-radius: 10px;
+    overflow: hidden;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    transition: transform 0.3s ease;
+}
+.image-container:hover {
+    transform: translateY(-5px);
+}
 </style>
 """, unsafe_allow_html=True)
+
+class DatasetPreview:
+    """Class untuk preview dataset saja (tidak untuk training)"""
+    
+    def __init__(self):
+        self.dataset_info = {}
+    
+    def extract_all_files(self, zip_path, extract_to):
+        """Extract semua file dari ZIP"""
+        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            zip_ref.extractall(extract_to)
+    
+    def find_folders(self, base_path):
+        """Cari folder benign dan malicious"""
+        benign_path = None
+        malicious_path = None
+        
+        for root, dirs, files in os.walk(base_path):
+            dirs_lower = [d.lower() for d in dirs]
+            
+            if 'benign' in dirs_lower:
+                idx = dirs_lower.index('benign')
+                benign_path = os.path.join(root, dirs[idx])
+            
+            if 'malicious' in dirs_lower:
+                idx = dirs_lower.index('malicious')
+                malicious_path = os.path.join(root, dirs[idx])
+        
+        return benign_path, malicious_path
+    
+    def count_images_in_folder(self, folder_path):
+        """Hitung gambar di folder"""
+        if not folder_path or not os.path.exists(folder_path):
+            return 0, []
+        
+        image_extensions = ['.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.gif']
+        image_files = []
+        
+        for filename in os.listdir(folder_path):
+            if any(filename.lower().endswith(ext) for ext in image_extensions):
+                image_files.append(os.path.join(folder_path, filename))
+        
+        return len(image_files), image_files[:10]  # Ambil 10 sample saja
+    
+    def process_zip_file(self, uploaded_zip):
+        """Process uploaded ZIP file untuk preview saja"""
+        
+        temp_dir = tempfile.mkdtemp()
+        
+        try:
+            zip_path = os.path.join(temp_dir, 'uploaded.zip')
+            with open(zip_path, 'wb') as f:
+                f.write(uploaded_zip.getvalue())
+            
+            extract_path = os.path.join(temp_dir, 'extracted')
+            os.makedirs(extract_path, exist_ok=True)
+            
+            self.extract_all_files(zip_path, extract_path)
+            
+            benign_path, malicious_path = self.find_folders(extract_path)
+            
+            benign_count, benign_samples = self.count_images_in_folder(benign_path)
+            malicious_count, malicious_samples = self.count_images_in_folder(malicious_path)
+            
+            dataset_info = {
+                'total_images': benign_count + malicious_count,
+                'benign_count': benign_count,
+                'malicious_count': malicious_count,
+                'benign_samples': benign_samples,
+                'malicious_samples': malicious_samples,
+                'benign_path': benign_path,
+                'malicious_path': malicious_path,
+                'extract_path': extract_path,
+                'has_benign': benign_count > 0,
+                'has_malicious': malicious_count > 0,
+                'temp_dir': temp_dir
+            }
+            
+            return dataset_info
+            
+        except Exception as e:
+            st.error(f"Error processing ZIP: {str(e)}")
+            if 'temp_dir' in locals():
+                shutil.rmtree(temp_dir, ignore_errors=True)
+            return None
+    
+    def display_dataset_info(self, dataset_info):
+        """Display dataset information untuk preview"""
+        
+        if not dataset_info:
+            return
+        
+        st.markdown('<div class="dataset-card">', unsafe_allow_html=True)
+        
+        # Dataset metrics
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Total Images", dataset_info['total_images'])
+        with col2:
+            st.metric("Benign Images", dataset_info['benign_count'])
+        with col3:
+            st.metric("Malicious Images", dataset_info['malicious_count'])
+        with col4:
+            ratio = dataset_info['benign_count'] / dataset_info['total_images'] * 100 if dataset_info['total_images'] > 0 else 0
+            st.metric("Benign Ratio", f"{ratio:.1f}%")
+        
+        st.markdown('</div>', unsafe_allow_html=True)
+        
+        # Distribution chart
+        if dataset_info['benign_count'] > 0 or dataset_info['malicious_count'] > 0:
+            fig = go.Figure(data=[
+                go.Bar(
+                    name='Benign',
+                    x=['Benign'],
+                    y=[dataset_info['benign_count']],
+                    marker_color='#10b981',
+                    text=[str(dataset_info['benign_count'])],
+                    textposition='auto'
+                ),
+                go.Bar(
+                    name='Malicious',
+                    x=['Malicious'],
+                    y=[dataset_info['malicious_count']],
+                    marker_color='#ef4444',
+                    text=[str(dataset_info['malicious_count'])],
+                    textposition='auto'
+                )
+            ])
+            
+            fig.update_layout(
+                title="Dataset Distribution",
+                yaxis_title="Number of Images",
+                height=300,
+                showlegend=True,
+                template="plotly_white"
+            )
+            
+            st.plotly_chart(fig, use_container_width=True)
+        
+        # Sample images - Benign
+        if dataset_info['benign_samples']:
+            st.subheader("✅ Benign QR Samples")
+            
+            # Create image gallery
+            cols = st.columns(5)
+            for idx, img_path in enumerate(dataset_info['benign_samples'][:5]):
+                with cols[idx % 5]:
+                    try:
+                        img = Image.open(img_path)
+                        img.thumbnail((150, 150))
+                        st.image(img, caption=f"Benign {idx+1}", use_container_width=True)
+                    except Exception as e:
+                        st.warning(f"Could not load image {idx+1}")
+            
+            if len(dataset_info['benign_samples']) > 5:
+                with st.expander(f"Show all {len(dataset_info['benign_samples'])} benign samples"):
+                    cols = st.columns(5)
+                    for idx, img_path in enumerate(dataset_info['benign_samples']):
+                        with cols[idx % 5]:
+                            try:
+                                img = Image.open(img_path)
+                                img.thumbnail((120, 120))
+                                st.image(img, caption=f"B{idx+1}", use_container_width=True)
+                            except:
+                                st.write(f"Image {idx+1}")
+        
+        # Sample images - Malicious
+        if dataset_info['malicious_samples']:
+            st.subheader("❌ Malicious QR Samples")
+            
+            cols = st.columns(5)
+            for idx, img_path in enumerate(dataset_info['malicious_samples'][:5]):
+                with cols[idx % 5]:
+                    try:
+                        img = Image.open(img_path)
+                        img.thumbnail((150, 150))
+                        st.image(img, caption=f"Malicious {idx+1}", use_container_width=True)
+                    except Exception as e:
+                        st.warning(f"Could not load image {idx+1}")
+            
+            if len(dataset_info['malicious_samples']) > 5:
+                with st.expander(f"Show all {len(dataset_info['malicious_samples'])} malicious samples"):
+                    cols = st.columns(5)
+                    for idx, img_path in enumerate(dataset_info['malicious_samples']):
+                        with cols[idx % 5]:
+                            try:
+                                img = Image.open(img_path)
+                                img.thumbnail((120, 120))
+                                st.image(img, caption=f"M{idx+1}", use_container_width=True)
+                            except:
+                                st.write(f"Image {idx+1}")
+        
+        # Dataset statistics
+        st.markdown("### 📊 Dataset Statistics")
+        
+        if dataset_info['total_images'] > 0:
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.write("**File Information:**")
+                st.write(f"- Total files: {dataset_info['total_images']}")
+                st.write(f"- Benign files: {dataset_info['benign_count']}")
+                st.write(f"- Malicious files: {dataset_info['malicious_count']}")
+                st.write(f"- Balance ratio: {dataset_info['benign_count']/dataset_info['total_images']:.2%}")
+            
+            with col2:
+                st.write("**Quality Indicators:**")
+                if dataset_info['benign_count'] == 0 or dataset_info['malicious_count'] == 0:
+                    st.error("⚠️ Dataset tidak seimbang (satu kelas kosong)")
+                elif abs(dataset_info['benign_count'] - dataset_info['malicious_count']) / dataset_info['total_images'] > 0.7:
+                    st.warning("⚠️ Dataset sangat tidak seimbang")
+                else:
+                    st.success("✅ Dataset cukup seimbang")
+                
+                if dataset_info['total_images'] < 100:
+                    st.warning("⚠️ Dataset sangat kecil (<100 samples)")
+                elif dataset_info['total_images'] < 500:
+                    st.info("ℹ️ Dataset ukuran sedang (100-500 samples)")
+                else:
+                    st.success("✅ Dataset cukup besar (>500 samples)")
 
 class ModelResultsAnalyzer:
     """Class untuk analisis dan visualisasi hasil model"""
@@ -247,6 +498,10 @@ class ModelResultsAnalyzer:
                 except:
                     st.warning(f"⚠️ History untuk {model_name} tidak valid atau kosong")
             
+            # Validasi metrics tidak semua 1.0
+            if self._check_suspicious_metrics(eval_data):
+                st.warning(f"⚠️ Metrics untuk {model_name} mencurigakan (semua 1.0 atau 0.0)")
+            
             # Simpan hasil
             self.model_results[model_name] = eval_data
             if history_data:
@@ -258,25 +513,20 @@ class ModelResultsAnalyzer:
             st.error(f"❌ Error loading {model_name} results: {str(e)}")
             return False
     
-    def validate_metrics(self, metrics):
-        """Validasi apakah metrics valid (tidak semua 1.0)"""
+    def _check_suspicious_metrics(self, metrics):
+        """Cek apakah metrics mencurigakan (semua 1.0 atau 0.0)"""
         if not metrics:
             return False
         
-        # Cek jika semua metrics 1.0 atau 0.0
-        all_ones = all(abs(v - 1.0) < 0.001 for k, v in metrics.items() 
-                      if k in ['accuracy', 'precision', 'recall', 'f1_score'])
-        all_zeros = all(abs(v - 0.0) < 0.001 for k, v in metrics.items() 
-                       if k in ['accuracy', 'precision', 'recall', 'f1_score'])
+        metric_keys = ['accuracy', 'precision', 'recall', 'f1_score']
+        values = [metrics.get(k, 0) for k in metric_keys]
         
-        if all_ones:
-            st.warning("⚠️ Semua metrics = 1.0 (kemungkinan overfitting atau data leakage)")
-            return False
-        elif all_zeros:
-            st.warning("⚠️ Semua metrics = 0.0 (model tidak belajar)")
-            return False
+        # Cek jika semua 1.0
+        all_ones = all(abs(v - 1.0) < 0.001 for v in values)
+        # Cek jika semua 0.0
+        all_zeros = all(abs(v - 0.0) < 0.001 for v in values)
         
-        return True
+        return all_ones or all_zeros
     
     def get_metric_color(self, value):
         """Get color based on metric value"""
@@ -374,6 +624,12 @@ class ModelResultsAnalyzer:
         # Plot training history jika ada
         if model_name in self.model_histories:
             self.plot_training_history(model_name)
+        
+        # Warning jika metrics mencurigakan
+        if self._check_suspicious_metrics(model_results):
+            st.markdown('<div class="warning-box">', unsafe_allow_html=True)
+            st.warning("⚠️ **Warning:** Metrics menunjukkan kemungkinan overfitting atau data leakage (semua metrics = 1.0)")
+            st.markdown('</div>', unsafe_allow_html=True)
         
         st.markdown('</div>', unsafe_allow_html=True)
     
@@ -602,157 +858,212 @@ class ModelResultsAnalyzer:
 def main():
     st.markdown("""
     <div class="hero-container">
-        <h1 class="hero-title">📊 QR Code Model Results Viewer</h1>
+        <h1 class="hero-title">📊 QR Code Model Results & Dataset Viewer</h1>
         <p class="hero-subtitle">
-            Upload and visualize CNN, LSTM, and GRU model results without training
+            Preview dataset + View model results without training
         </p>
     </div>
     """, unsafe_allow_html=True)
     
+    dataset_preview = DatasetPreview()
     analyzer = ModelResultsAnalyzer()
     
     with st.sidebar:
-        st.header("📤 Upload Model Results")
+        st.header("📤 Upload Files")
         
-        st.markdown('<div class="upload-section">', unsafe_allow_html=True)
+        # Tab untuk upload
+        tab_upload, tab_info = st.tabs(["📁 Upload", "ℹ️ Info"])
         
-        # Upload untuk setiap model
-        st.subheader("🖼️ CNN Results")
-        cnn_eval = st.file_uploader(
-            "Upload cnn_eval.json",
-            type=["json"],
-            key="cnn_eval"
-        )
-        cnn_history = st.file_uploader(
-            "Upload cnn_history.json (optional)",
-            type=["json"],
-            key="cnn_history"
-        )
-        
-        st.markdown("---")
-        st.subheader("📝 LSTM Results")
-        lstm_eval = st.file_uploader(
-            "Upload lstm_eval.json",
-            type=["json"],
-            key="lstm_eval"
-        )
-        lstm_history = st.file_uploader(
-            "Upload lstm_history.json (optional)",
-            type=["json"],
-            key="lstm_history"
-        )
-        
-        st.markdown("---")
-        st.subheader("🌀 GRU Results")
-        gru_eval = st.file_uploader(
-            "Upload gru_eval.json",
-            type=["json"],
-            key="gru_eval"
-        )
-        gru_history = st.file_uploader(
-            "Upload gru_history.json (optional)",
-            type=["json"],
-            key="gru_history"
-        )
-        
-        st.markdown('</div>', unsafe_allow_html=True)
-        
-        st.markdown("---")
-        st.header("⚙️ Settings")
-        
-        show_history = st.checkbox("Show Training History", value=True,
-                                  help="Display training history plots if available")
-        
-        auto_validate = st.checkbox("Auto-Validate Metrics", value=True,
-                                   help="Check for suspicious metrics (all 1.0 or 0.0)")
-        
-        if st.button("🚀 Load & Analyze Results", type="primary", use_container_width=True):
-            # Reset previous results
-            analyzer.model_results = {}
-            analyzer.model_histories = {}
+        with tab_upload:
+            st.markdown('<div class="upload-section">', unsafe_allow_html=True)
             
-            # Load CNN results
-            if cnn_eval:
-                with st.spinner("Loading CNN results..."):
-                    if analyzer.load_model_results('cnn', cnn_eval, cnn_history):
-                        st.session_state['cnn_loaded'] = True
-                        if auto_validate:
-                            analyzer.validate_metrics(analyzer.model_results.get('cnn', {}))
+            # Upload Dataset
+            st.subheader("📂 Dataset ZIP")
+            uploaded_dataset = st.file_uploader(
+                "Upload dataset ZIP for preview",
+                type=['zip'],
+                help="Must contain 'benign' and 'malicious' folders. For preview only.",
+                key="dataset_zip"
+            )
             
-            # Load LSTM results
-            if lstm_eval:
-                with st.spinner("Loading LSTM results..."):
-                    if analyzer.load_model_results('lstm', lstm_eval, lstm_history):
-                        st.session_state['lstm_loaded'] = True
-                        if auto_validate:
-                            analyzer.validate_metrics(analyzer.model_results.get('lstm', {}))
+            st.markdown("---")
             
-            # Load GRU results
-            if gru_eval:
-                with st.spinner("Loading GRU results..."):
-                    if analyzer.load_model_results('gru', gru_eval, gru_history):
-                        st.session_state['gru_loaded'] = True
-                        if auto_validate:
-                            analyzer.validate_metrics(analyzer.model_results.get('gru', {}))
+            # Upload Model Results
+            st.subheader("🤖 Model Results")
             
-            if analyzer.model_results:
-                st.session_state['analyzer'] = analyzer
-                st.session_state['results_loaded'] = True
-                st.success(f"✅ Loaded {len(analyzer.model_results)} model(s)")
-            else:
-                st.error("❌ No valid model results loaded")
+            st.markdown("🖼️ **CNN Results**")
+            cnn_eval = st.file_uploader(
+                "Upload cnn_eval.json",
+                type=["json"],
+                key="cnn_eval"
+            )
+            cnn_history = st.file_uploader(
+                "Upload cnn_history.json (optional)",
+                type=["json"],
+                key="cnn_history"
+            )
+            
+            st.markdown("📝 **LSTM Results**")
+            lstm_eval = st.file_uploader(
+                "Upload lstm_eval.json",
+                type=["json"],
+                key="lstm_eval"
+            )
+            lstm_history = st.file_uploader(
+                "Upload lstm_history.json (optional)",
+                type=["json"],
+                key="lstm_history"
+            )
+            
+            st.markdown("🌀 **GRU Results**")
+            gru_eval = st.file_uploader(
+                "Upload gru_eval.json",
+                type=["json"],
+                key="gru_eval"
+            )
+            gru_history = st.file_uploader(
+                "Upload gru_history.json (optional)",
+                type=["json"],
+                key="gru_history"
+            )
+            
+            st.markdown('</div>', unsafe_allow_html=True)
+            
+            st.markdown("---")
+            
+            # Load buttons
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                if st.button("📂 Load Dataset", use_container_width=True):
+                    if uploaded_dataset:
+                        with st.spinner("Processing dataset..."):
+                            dataset_info = dataset_preview.process_zip_file(uploaded_dataset)
+                            if dataset_info:
+                                st.session_state['dataset_info'] = dataset_info
+                                st.success(f"✅ Loaded {dataset_info['total_images']} images")
+                            else:
+                                st.error("❌ Failed to load dataset")
+                    else:
+                        st.warning("Please upload dataset ZIP first")
+            
+            with col2:
+                if st.button("🤖 Load Model Results", type="primary", use_container_width=True):
+                    # Reset previous results
+                    analyzer.model_results = {}
+                    analyzer.model_histories = {}
+                    
+                    models_loaded = 0
+                    
+                    # Load CNN results
+                    if cnn_eval:
+                        with st.spinner("Loading CNN results..."):
+                            if analyzer.load_model_results('cnn', cnn_eval, cnn_history):
+                                models_loaded += 1
+                    
+                    # Load LSTM results
+                    if lstm_eval:
+                        with st.spinner("Loading LSTM results..."):
+                            if analyzer.load_model_results('lstm', lstm_eval, lstm_history):
+                                models_loaded += 1
+                    
+                    # Load GRU results
+                    if gru_eval:
+                        with st.spinner("Loading GRU results..."):
+                            if analyzer.load_model_results('gru', gru_eval, gru_history):
+                                models_loaded += 1
+                    
+                    if models_loaded > 0:
+                        st.session_state['analyzer'] = analyzer
+                        st.session_state['models_loaded'] = models_loaded
+                        st.success(f"✅ Loaded {models_loaded} model(s)")
+                    else:
+                        st.error("❌ No valid model results loaded")
+            
+            st.markdown("---")
+            
+            if st.button("🔄 Reset All", use_container_width=True):
+                st.session_state.clear()
+                st.rerun()
         
-        st.markdown("---")
-        if st.button("🔄 Reset All", use_container_width=True):
-            st.session_state.clear()
-            st.rerun()
-        
-        st.markdown("---")
-        st.header("ℹ️ How to Use")
-        with st.expander("Instructions"):
-            st.markdown("""
-            1. **Upload JSON Files** for each model:
-               - `*_eval.json`: Contains accuracy, precision, recall, f1_score
-               - `*_history.json` (optional): Contains training history
+        with tab_info:
+            st.markdown("### 📋 File Formats")
             
-            2. **Click 'Load & Analyze Results'**
+            st.markdown("**Dataset ZIP:**")
+            st.code("""
+            dataset.zip/
+            ├── benign/
+            │   ├── image1.png
+            │   ├── image2.jpg
+            │   └── ...
+            └── malicious/
+                ├── image1.png
+                ├── image2.jpg
+                └── ...
+            """)
             
-            3. **View results** in the main tabs
-            
-            **Required format for *_eval.json:**
-            ```json
+            st.markdown("**Model Eval JSON:**")
+            st.code("""
             {
                 "accuracy": 0.95,
                 "precision": 0.94,
                 "recall": 0.93,
-                "f1_score": 0.935
+                "f1_score": 0.935,
+                "auc": 0.98  // optional
             }
-            ```
+            """)
             
-            **Optional format for *_history.json:**
-            ```json
+            st.markdown("**Model History JSON (optional):**")
+            st.code("""
             {
                 "accuracy": [0.85, 0.90, 0.92, 0.94, 0.95],
                 "val_accuracy": [0.82, 0.87, 0.90, 0.92, 0.93],
                 "loss": [0.45, 0.30, 0.22, 0.18, 0.15],
                 "val_loss": [0.48, 0.32, 0.25, 0.20, 0.17]
             }
-            ```
             """)
     
     # Main content tabs
-    tab1, tab2, tab3, tab4 = st.tabs(["📊 Model Results", "📈 Comparison", "🏆 Best Model", "💾 Download"])
+    tab1, tab2, tab3, tab4 = st.tabs(["📂 Dataset", "📊 Model Results", "📈 Comparison", "💾 Download"])
     
-    # --- TAB 1: Model Results ---
+    # --- TAB 1: Dataset Preview ---
     with tab1:
+        st.header("📂 Dataset Preview")
+        
+        if 'dataset_info' in st.session_state:
+            dataset_info = st.session_state['dataset_info']
+            
+            st.markdown('<div class="info-box">', unsafe_allow_html=True)
+            st.write("**ℹ️ Dataset Preview Only** - Dataset tidak digunakan untuk training, hanya untuk preview.")
+            st.markdown('</div>', unsafe_allow_html=True)
+            
+            dataset_preview.display_dataset_info(dataset_info)
+            
+            # Cleanup button
+            if st.button("🗑️ Clear Dataset Preview", type="secondary"):
+                if 'temp_dir' in dataset_info:
+                    try:
+                        shutil.rmtree(dataset_info['temp_dir'], ignore_errors=True)
+                    except:
+                        pass
+                del st.session_state['dataset_info']
+                st.rerun()
+        else:
+            st.info("👈 Upload dataset ZIP in the sidebar to preview")
+            st.image("https://via.placeholder.com/800x400.png?text=Dataset+Preview+Area", 
+                    caption="Upload dataset to see preview here", 
+                    use_container_width=True)
+    
+    # --- TAB 2: Model Results ---
+    with tab2:
         st.header("📊 Individual Model Results")
         
-        if st.session_state.get('results_loaded') and 'analyzer' in st.session_state:
+        if st.session_state.get('models_loaded') and 'analyzer' in st.session_state:
             analyzer = st.session_state['analyzer']
             
             # Display loaded models
             st.markdown('<div class="info-box">', unsafe_allow_html=True)
-            st.write(f"**Loaded Models:** {', '.join([m.upper() for m in analyzer.model_results.keys()])}")
+            st.write(f"**ℹ️ Loaded Models:** {', '.join([m.upper() for m in analyzer.model_results.keys()])}")
             st.markdown('</div>', unsafe_allow_html=True)
             
             # Display each model's results
@@ -782,14 +1093,42 @@ def main():
                 df_summary = pd.DataFrame(summary_data)
                 st.dataframe(df_summary, use_container_width=True)
                 
+                # Performance analysis
+                st.markdown("### 🎯 Performance Analysis")
+                
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    # Best accuracy
+                    best_acc_model = max(analyzer.model_results.items(), 
+                                       key=lambda x: x[1].get('accuracy', 0))
+                    st.metric("Best Accuracy", 
+                             f"{best_acc_model[1].get('accuracy', 0):.4f}",
+                             best_acc_model[0].upper())
+                
+                with col2:
+                    # Best F1-score
+                    best_f1_model = max(analyzer.model_results.items(), 
+                                      key=lambda x: x[1].get('f1_score', 0))
+                    st.metric("Best F1-Score", 
+                             f"{best_f1_model[1].get('f1_score', 0):.4f}",
+                             best_f1_model[0].upper())
+                
+                with col3:
+                    # Average F1-score
+                    avg_f1 = np.mean([r.get('f1_score', 0) for r in analyzer.model_results.values()])
+                    st.metric("Average F1-Score", f"{avg_f1:.4f}")
         else:
-            st.info("👈 Please upload model results in the sidebar and click 'Load & Analyze Results'")
+            st.info("👈 Upload model results in the sidebar and click 'Load Model Results'")
+            st.image("https://via.placeholder.com/800x400.png?text=Model+Results+Area", 
+                    caption="Upload model results to see analysis here", 
+                    use_container_width=True)
     
-    # --- TAB 2: Comparison ---
-    with tab2:
+    # --- TAB 3: Comparison ---
+    with tab3:
         st.header("📈 Model Comparison Analysis")
         
-        if st.session_state.get('results_loaded') and 'analyzer' in st.session_state:
+        if st.session_state.get('models_loaded') and 'analyzer' in st.session_state:
             analyzer = st.session_state['analyzer']
             
             if len(analyzer.model_results) >= 2:
@@ -824,24 +1163,48 @@ def main():
                 if fig_radar:
                     st.plotly_chart(fig_radar, use_container_width=True)
                 
-                # Statistical analysis
-                st.subheader("📊 Statistical Analysis")
-                col1, col2, col3 = st.columns(3)
+                # Best model determination
+                st.subheader("🏆 Best Model Analysis")
+                best_model_name, best_f1 = analyzer.determine_best_model()
                 
-                with col1:
-                    if len(analyzer.model_results) > 0:
-                        avg_accuracy = np.mean([r.get('accuracy', 0) for r in analyzer.model_results.values()])
-                        st.metric("Average Accuracy", f"{avg_accuracy:.4f}")
-                
-                with col2:
-                    if len(analyzer.model_results) > 0:
-                        avg_f1 = np.mean([r.get('f1_score', 0) for r in analyzer.model_results.values()])
-                        st.metric("Average F1-Score", f"{avg_f1:.4f}")
-                
-                with col3:
-                    if len(analyzer.model_results) > 0:
-                        std_accuracy = np.std([r.get('accuracy', 0) for r in analyzer.model_results.values()])
-                        st.metric("Std Dev Accuracy", f"{std_accuracy:.4f}")
+                if best_model_name:
+                    col1, col2, col3 = st.columns(3)
+                    
+                    with col1:
+                        st.metric("Best Model", best_model_name.upper())
+                    
+                    with col2:
+                        best_results = analyzer.model_results[best_model_name]
+                        st.metric("Best F1-Score", f"{best_f1:.4f}")
+                    
+                    with col3:
+                        improvement = 0
+                        if len(analyzer.model_results) > 1:
+                            other_f1 = [r.get('f1_score', 0) for n, r in analyzer.model_results.items() 
+                                      if n != best_model_name]
+                            if other_f1 and np.mean(other_f1) > 0:
+                                avg_other_f1 = np.mean(other_f1)
+                                improvement = ((best_f1 - avg_other_f1) / avg_other_f1) * 100
+                                st.metric("Improvement", f"{improvement:.1f}%")
+                    
+                    # Recommendations
+                    st.markdown("### 💡 Recommendations")
+                    
+                    if best_f1 >= 0.9:
+                        st.markdown('<div class="success-box">', unsafe_allow_html=True)
+                        st.write("✅ **Excellent performance!** Model sudah sangat baik.")
+                        st.markdown('</div>', unsafe_allow_html=True)
+                    elif best_f1 >= 0.8:
+                        st.markdown('<div class="info-box">', unsafe_allow_html=True)
+                        st.write("ℹ️ **Good performance.** Consider fine-tuning for better results.")
+                        st.markdown('</div>', unsafe_allow_html=True)
+                    else:
+                        st.markdown('<div class="warning-box">', unsafe_allow_html=True)
+                        st.write("⚠️ **Performance needs improvement.** Consider:")
+                        st.write("- Collecting more training data")
+                        st.write("- Trying different model architectures")
+                        st.write("- Hyperparameter tuning")
+                        st.markdown('</div>', unsafe_allow_html=True)
                 
             else:
                 st.warning("⚠️ Need at least 2 models for comparison")
@@ -849,129 +1212,13 @@ def main():
                     model_name = list(analyzer.model_results.keys())[0]
                     st.info(f"Only {model_name.upper()} loaded. Upload more models for comparison.")
         else:
-            st.info("👈 Please upload at least 2 model results for comparison")
-    
-    # --- TAB 3: Best Model ---
-    with tab3:
-        st.header("🏆 Best Model Analysis")
-        
-        if st.session_state.get('results_loaded') and 'analyzer' in st.session_state:
-            analyzer = st.session_state['analyzer']
-            
-            if len(analyzer.model_results) > 0:
-                # Determine best model
-                best_model_name, best_f1 = analyzer.determine_best_model()
-                
-                if best_model_name:
-                    best_results = analyzer.model_results[best_model_name]
-                    
-                    # Best model banner
-                    st.markdown(f"""
-                    <div class="best-model-banner">
-                        <h3 style="margin:0 0 1rem 0;">🏆 Best Performing Model: {best_model_name.upper()}</h3>
-                        <div style="display: flex; justify-content: center; gap: 2rem; margin-top: 1rem;">
-                            <div style="text-align: center;">
-                                <div style="font-size: 0.9rem; color: #64748b;">F1-Score</div>
-                                <div style="font-size: 2rem; font-weight: 700; color: #10b981;">
-                                    {best_f1:.4f}
-                                </div>
-                            </div>
-                            <div style="text-align: center;">
-                                <div style="font-size: 0.9rem; color: #64748b;">Accuracy</div>
-                                <div style="font-size: 2rem; font-weight: 700; color: #10b981;">
-                                    {best_results.get('accuracy', 0):.4f}
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                    """, unsafe_allow_html=True)
-                    
-                    # Best model details
-                    st.subheader(f"📊 {best_model_name.upper()} Detailed Metrics")
-                    
-                    col1, col2 = st.columns([2, 1])
-                    
-                    with col1:
-                        # Metrics gauge chart
-                        fig = go.Figure()
-                        
-                        metrics = ['Accuracy', 'Precision', 'Recall', 'F1-Score']
-                        values = [
-                            best_results.get('accuracy', 0),
-                            best_results.get('precision', 0),
-                            best_results.get('recall', 0),
-                            best_results.get('f1_score', 0)
-                        ]
-                        
-                        colors = ['#10b981' if v >= 0.8 else '#f59e0b' if v >= 0.7 else '#ef4444' for v in values]
-                        
-                        fig.add_trace(go.Bar(
-                            x=values,
-                            y=metrics,
-                            orientation='h',
-                            marker_color=colors,
-                            text=[f'{v:.3f}' for v in values],
-                            textposition='auto',
-                        ))
-                        
-                        fig.update_layout(
-                            title=f"{best_model_name.upper()} Performance Metrics",
-                            xaxis=dict(range=[0, 1]),
-                            height=300,
-                            showlegend=False,
-                            template="plotly_white"
-                        )
-                        
-                        st.plotly_chart(fig, use_container_width=True)
-                    
-                    with col2:
-                        # Quick stats
-                        st.markdown("### 📈 Quick Stats")
-                        
-                        st.metric("Precision", f"{best_results.get('precision', 0):.4f}")
-                        st.metric("Recall", f"{best_results.get('recall', 0):.4f}")
-                        
-                        # Calculate improvement if multiple models
-                        if len(analyzer.model_results) > 1:
-                            other_f1 = [r.get('f1_score', 0) for n, r in analyzer.model_results.items() 
-                                      if n != best_model_name]
-                            if other_f1:
-                                avg_other_f1 = np.mean(other_f1)
-                                improvement = ((best_f1 - avg_other_f1) / avg_other_f1) * 100
-                                st.metric("Improvement vs Others", f"{improvement:.1f}%")
-                    
-                    # Model recommendations
-                    st.subheader("💡 Recommendations")
-                    
-                    recommendations = []
-                    if best_results.get('precision', 0) < 0.8:
-                        recommendations.append("Improve precision to reduce false positives")
-                    if best_results.get('recall', 0) < 0.8:
-                        recommendations.append("Improve recall to reduce false negatives")
-                    if best_f1 < 0.8:
-                        recommendations.append("Overall model performance needs improvement")
-                    
-                    if recommendations:
-                        st.markdown('<div class="warning-box">', unsafe_allow_html=True)
-                        st.write("**Areas for Improvement:**")
-                        for rec in recommendations:
-                            st.write(f"- {rec}")
-                        st.markdown('</div>', unsafe_allow_html=True)
-                    else:
-                        st.markdown('<div class="success-box">', unsafe_allow_html=True)
-                        st.write("✅ Excellent model performance across all metrics!")
-                        st.markdown('</div>', unsafe_allow_html=True)
-                    
-            else:
-                st.info("No model results available")
-        else:
-            st.info("👈 Please load model results first")
+            st.info("👈 Upload at least 2 model results for comparison")
     
     # --- TAB 4: Download ---
     with tab4:
-        st.header("💾 Download Analysis Results")
+        st.header("💾 Download Reports")
         
-        if st.session_state.get('results_loaded') and 'analyzer' in st.session_state:
+        if st.session_state.get('models_loaded') and 'analyzer' in st.session_state:
             analyzer = st.session_state['analyzer']
             
             if len(analyzer.model_results) > 0:
@@ -980,7 +1227,7 @@ def main():
                 
                 report_format = st.selectbox(
                     "Select Report Format:",
-                    ["JSON", "CSV", "HTML", "PDF (Not supported)"]
+                    ["JSON", "CSV", "Text Summary", "HTML Template"]
                 )
                 
                 if st.button("📥 Generate Comprehensive Report", use_container_width=True):
@@ -991,6 +1238,7 @@ def main():
                             'models_analyzed': list(analyzer.model_results.keys()),
                             'model_results': analyzer.model_results,
                             'best_model': analyzer.determine_best_model()[0],
+                            'best_f1_score': analyzer.determine_best_model()[1],
                             'summary_statistics': {}
                         }
                         
@@ -1002,7 +1250,8 @@ def main():
                                     'mean': np.mean(values),
                                     'std': np.std(values),
                                     'min': np.min(values),
-                                    'max': np.max(values)
+                                    'max': np.max(values),
+                                    'median': np.median(values)
                                 }
                         
                         if report_format == "JSON":
@@ -1024,6 +1273,43 @@ def main():
                                 data=csv_data,
                                 file_name=f"model_comparison_{time.strftime('%Y%m%d_%H%M%S')}.csv",
                                 mime="text/csv",
+                                use_container_width=True
+                            )
+                        
+                        elif report_format == "Text Summary":
+                            # Create text summary
+                            summary_text = f"""
+                            MODEL ANALYSIS REPORT
+                            ======================
+                            
+                            Generated: {time.strftime("%Y-%m-%d %H:%M:%S")}
+                            
+                            Models Analyzed: {', '.join(analyzer.model_results.keys())}
+                            
+                            Best Model: {analyzer.determine_best_model()[0].upper()}
+                            Best F1-Score: {analyzer.determine_best_model()[1]:.4f}
+                            
+                            {'='*60}
+                            
+                            DETAILED RESULTS:
+                            {'='*60}
+                            """
+                            
+                            for model_name, results in analyzer.model_results.items():
+                                summary_text += f"""
+                            {model_name.upper()}:
+                              Accuracy:  {results.get('accuracy', 0):.4f}
+                              Precision: {results.get('precision', 0):.4f}
+                              Recall:    {results.get('recall', 0):.4f}
+                              F1-Score:  {results.get('f1_score', 0):.4f}
+                            
+                            """
+                            
+                            st.download_button(
+                                label="📥 Download Text Summary",
+                                data=summary_text,
+                                file_name=f"model_summary_{time.strftime('%Y%m%d_%H%M%S')}.txt",
+                                mime="text/plain",
                                 use_container_width=True
                             )
                 
@@ -1053,21 +1339,31 @@ def main():
                             use_container_width=True
                         )
                 
-                # Summary download
+                # Quick summary
                 st.subheader("📋 Quick Summary")
                 
+                if 'dataset_info' in st.session_state:
+                    dataset_info = st.session_state['dataset_info']
+                    dataset_summary = f"""
+                    Dataset: {dataset_info['total_images']} images
+                    - Benign: {dataset_info['benign_count']}
+                    - Malicious: {dataset_info['malicious_count']}
+                    """
+                else:
+                    dataset_summary = "No dataset loaded"
+                
                 summary_text = f"""
-                Model Analysis Summary
+                QUICK MODEL ANALYSIS SUMMARY
+                {'='*40}
+                
                 Generated: {time.strftime("%Y-%m-%d %H:%M:%S")}
                 
-                Models Analyzed: {', '.join(analyzer.model_results.keys())}
+                DATASET INFO:
+                {dataset_summary}
                 
-                Best Model: {analyzer.determine_best_model()[0]}
-                Best F1-Score: {analyzer.determine_best_model()[1]:.4f}
+                MODEL RESULTS:
+                {'='*40}
                 
-                {'='*50}
-                
-                Detailed Results:
                 """
                 
                 for model_name, results in analyzer.model_results.items():
@@ -1080,10 +1376,21 @@ def main():
                 
                 """
                 
+                best_model, best_f1 = analyzer.determine_best_model()
+                summary_text += f"""
+                CONCLUSION:
+                {'='*40}
+                
+                Best Model: {best_model.upper()}
+                Best F1-Score: {best_f1:.4f}
+                
+                Recommendation: {'Excellent' if best_f1 >= 0.9 else 'Good' if best_f1 >= 0.8 else 'Needs Improvement'}
+                """
+                
                 st.download_button(
-                    label="📝 Download Text Summary",
+                    label="📝 Download Quick Summary",
                     data=summary_text,
-                    file_name=f"model_summary_{time.strftime('%Y%m%d_%H%M%S')}.txt",
+                    file_name=f"quick_summary_{time.strftime('%Y%m%d_%H%M%S')}.txt",
                     mime="text/plain",
                     use_container_width=True
                 )
@@ -1091,7 +1398,7 @@ def main():
             else:
                 st.info("No model results to export")
         else:
-            st.info("👈 Please load model results first")
+            st.info("👈 Load model results first to generate reports")
 
 if __name__ == "__main__":
     main()
